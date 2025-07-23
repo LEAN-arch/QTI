@@ -1,0 +1,13 @@
+# requirements.txt
+#
+# This file lists the Python package dependencies for the 
+# Interactive Quality Engineer Application.
+#
+# To install these dependencies, run the following command in your terminal:
+# pip install -r requirements.txt
+
+numpy==1.26.4
+pandas==2.2.2
+plotly==5.22.0
+scipy==1.13.1
+streamlit==1.35.0
