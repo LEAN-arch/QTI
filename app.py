@@ -1,4 +1,4 @@
-# app.py
+# app.py (Corrected)
 
 import streamlit as st
 import pandas as pd
@@ -148,7 +148,7 @@ def show_investigations_module():
 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("""
+            st.markdown(r"""
             **Mathematical Basis:**
             - **Centerline:** The process average (μ).
             - **Control Limits (UCL/LCL):** Calculated as μ ± 3σ, where σ is the process standard deviation, estimated from the moving range. These represent the expected range of common-cause variation.
@@ -185,7 +185,8 @@ def show_investigations_module():
             col1, col2 = st.columns(2)
             with col1:
                 st.metric(label="Process Capability Index (Cpk)", value=f"{cpk:.2f}")
-                st.markdown("""
+                # FIX: Used raw string literal (r"...") to prevent SyntaxWarning
+                st.markdown(r"""
                 **Mathematical Basis (Cpk):**
                 - $C_{pk} = min(\frac{USL - \mu}{3\sigma}, \frac{\mu - LSL}{3\sigma})$
                 - Measures how centered the process is and how well it fits within specification limits. It assesses potential (short-term) capability.
@@ -497,4 +498,3 @@ def show_contact_module():
 # --- Run the App ---
 if __name__ == "__main__":
     run_app()
-  
