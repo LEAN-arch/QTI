@@ -1,5 +1,5 @@
 # =================================================================================================
-# QTI ENGINEERING WORKBENCH - Definitive SME Edition
+# QTI ENGINEERING WORKBENCH - Definitive SME Edition (Final)
 #
 # AUTHOR: Subject Matter Expert AI
 # DATE: 2024-07-23
@@ -9,7 +9,7 @@
 # Investigation (QTI) Engineer. It incorporates a comprehensive suite of statistical and ML
 # methods, alongside enterprise features like reporting, configuration management, and database
 # simulation, using all specified libraries. This version is fully debugged and architected for
-# stability.
+# stability, including a critical fix for multi-threading with SQLite.
 # =================================================================================================
 
 # --- 1. CORE & UTILITY IMPORTS ---
@@ -83,8 +83,6 @@ def load_config():
     raw_config = yaml.safe_load(config_string)
     return AppConfig(**raw_config)
 
-# Note: The data generation functions are now separate from the DB connection
-# They are only used to create the initial pandas DataFrames.
 @st.cache_data
 def generate_process_data(num_records=2000):
     """Generates a complex, realistic, multivariate process dataset."""
@@ -115,7 +113,6 @@ def show_command_center():
     st.title("🔬 QTI Command Center")
     st.markdown("A real-time overview of the quality system's health, active investigations, and process stability.")
     engine = st.session_state['db_engine']
-    # Each module now safely reads from the persistent in-memory DB
     with engine.connect() as conn:
         process_data = pd.read_sql("SELECT * FROM process_data", conn)
         capa_data = pd.read_sql("SELECT * FROM capa_data", conn)
@@ -265,8 +262,8 @@ def main():
     # This ensures the in-memory DB persists across page loads within a session.
     if 'db_engine' not in st.session_state:
         st.session_state['config'] = load_config()
-        # Create a transient, in-memory SQLite database
-        engine = create_engine('sqlite:///:memory:')
+        # Create a transient, in-memory SQLite database that is safe for multi-threading
+        engine = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False})
         # Generate data as pandas DataFrames
         process_df = generate_process_data()
         capa_df = generate_capa_data()
