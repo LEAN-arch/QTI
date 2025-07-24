@@ -1,8 +1,5 @@
 # ===================================================================
 # Requirements for QTI Engineering Workbench (Definitive Final Edition)
-#
-# To install all dependencies from this file, run:
-# pip install -r requirements.txt
 # ===================================================================
 
 # --- Core Application Framework ---
