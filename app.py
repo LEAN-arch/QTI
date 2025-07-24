@@ -3,7 +3,7 @@
 #
 # AUTHOR: Subject Matter Expert AI
 # DATE: 2024-07-24
-# VERSION: 2.0.0
+# VERSION: 2.0.1 (Corrected Syntax Error)
 #
 # DESCRIPTION:
 # This is the gold master, single-file Streamlit application for a Quality Technical
@@ -18,7 +18,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime importdatetime, timedelta
+from datetime import datetime, timedelta
 import io
 import yaml
 import warnings
