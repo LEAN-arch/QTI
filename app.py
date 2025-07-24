@@ -224,7 +224,7 @@ def show_predictive_and_optimization():
         with col1:
             st.write("Input Parameters:");
             features = ['reagent_ph', 'fill_volume_ml', 'pressure_psi']
-            ph = st.slider("pH", 7.0, 7.6, 7.25); vol = st.slider("Volume", 9.8, 10.2, 10.0); psi = st.slider("Pressure", 45.0, 58.0, 51.0);
+            ph, vol, psi = st.slider("pH", 7.0, 7.6, 7.25), st.slider("Volume", 9.8, 10.2, 10.0), st.slider("Pressure", 45.0, 58.0, 51.0);
             input_df = pd.DataFrame([[ph, vol, psi]], columns=features)
             proba = model.predict_proba(input_df)[0][1]; st.metric("Predicted Anomaly Probability", f"{proba:.1%}")
         with col2:
@@ -232,8 +232,8 @@ def show_predictive_and_optimization():
             # DEFINITIVE FIX: Robustly handle SHAP's multi-class output format
             base_value = explainer.expected_value
             shap_values = explainer.shap_values(input_df)
-            if isinstance(base_value, list): base_value = base_value[1]
-            if isinstance(shap_values, list): shap_values = shap_values[1]
+            if isinstance(base_value, list): base_value = base_value[1] # Select value for class 1
+            if isinstance(shap_values, list): shap_values = shap_values[1] # Select values for class 1
             
             fig, ax = plt.subplots(figsize=(10, 3)); shap.force_plot(base_value, shap_values[0], input_df.iloc[0], matplotlib=True, show=False); st.pyplot(fig, bbox_inches='tight', dpi=150); plt.close(fig)
 
@@ -292,6 +292,7 @@ def show_reporting():
 def main():
     st.sidebar.title("QTI Workbench Navigation")
     st.sidebar.markdown("---")
+    # Definitive fix for data persistence: Use st.session_state with simple DataFrames.
     if 'data_loaded' not in st.session_state:
         st.session_state['config'] = load_config()
         st.session_state['process_data'] = generate_process_data()
