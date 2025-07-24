@@ -51,7 +51,7 @@ from pptx.util import Inches
 
 # --- 6. APPLICATION CONFIGURATION ---
 st.set_page_config(page_title="QTI Engineering Workbench", page_icon="🔬", layout="wide", initial_sidebar_state="expanded")
-warnings.filterwarnings("ignore", category=UserWarning, module='skopt')
+warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # =================================================================================================
@@ -222,18 +222,20 @@ def show_predictive_and_optimization():
     with tab3:
         st.subheader("Real-Time Prediction with XAI"); model, explainer = get_model_and_explainer(process_data); col1, col2 = st.columns([1, 2])
         with col1:
-            st.write("Input Parameters:"); ph, vol, psi = st.slider("pH", 7.0, 7.6, 7.25), st.slider("Volume", 9.8, 10.2, 10.0), st.slider("Pressure", 45.0, 58.0, 51.0);
-            input_data = np.array([[ph, vol, psi]]); proba = model.predict_proba(input_data)[0][1]; st.metric("Predicted Anomaly Probability", f"{proba:.1%}")
+            st.write("Input Parameters:");
+            features = ['reagent_ph', 'fill_volume_ml', 'pressure_psi']
+            ph = st.slider("pH", 7.0, 7.6, 7.25); vol = st.slider("Volume", 9.8, 10.2, 10.0); psi = st.slider("Pressure", 45.0, 58.0, 51.0);
+            input_df = pd.DataFrame([[ph, vol, psi]], columns=features)
+            proba = model.predict_proba(input_df)[0][1]; st.metric("Predicted Anomaly Probability", f"{proba:.1%}")
         with col2:
             st.write("XAI Driver Analysis:")
             # DEFINITIVE FIX: Robustly handle SHAP's multi-class output format
             base_value = explainer.expected_value
-            shap_values = explainer.shap_values(input_data)
+            shap_values = explainer.shap_values(input_df)
             if isinstance(base_value, list): base_value = base_value[1]
             if isinstance(shap_values, list): shap_values = shap_values[1]
-            if shap_values.ndim > 1: shap_values = shap_values[0]
             
-            fig, ax = plt.subplots(figsize=(10, 3)); shap.force_plot(base_value, shap_values, np.around(input_data[0], 2), feature_names=['ph', 'vol', 'psi'], matplotlib=True, show=False); st.pyplot(fig, bbox_inches='tight', dpi=150); plt.close(fig)
+            fig, ax = plt.subplots(figsize=(10, 3)); shap.force_plot(base_value, shap_values[0], input_df.iloc[0], matplotlib=True, show=False); st.pyplot(fig, bbox_inches='tight', dpi=150); plt.close(fig)
 
 # =================================================================================================
 # MODULE 6: ADVANCED DEMOS & VALIDATION
@@ -251,11 +253,9 @@ def show_advanced_demos():
             st.success(f"Dask computation complete. Mean pressure across all data: **{mean_pressure:.2f} psi**")
     with tab2:
         st.subheader("Limit of Detection (LoD) by Probit Analysis"); st.markdown("**Use Case:** Determine the lowest concentration an assay can reliably detect."); df = generate_lod_data(); df['Not Detected'] = df['Total'] - df['Detected']
-        # DEFINITIVE FIX: Use sm.GLM with a Binomial family for Probit analysis of success/trial data.
-        df['log_conc'] = np.log10(df['Concentration'].replace(0, 0.01)); 
+        df['log_conc'] = np.log10(df['Concentration'].replace(0, 0.01));
         glm_binom = sm.GLM(endog=df[['Detected', 'Not Detected']], exog=sm.add_constant(df['log_conc']), family=sm.families.Binomial(link=sm.families.links.probit()))
         res = glm_binom.fit()
-        
         target, params = stats.norm.ppf(0.95), res.params; lod = 10**((target - params['const']) / params['log_conc'])
         st.metric("Calculated Limit of Detection (LoD) at 95%", f"{lod:.3f}");
         x_range = np.linspace(df['log_conc'].min(), df['log_conc'].max(), 200); y_pred = res.predict(sm.add_constant(x_range))
@@ -292,8 +292,6 @@ def show_reporting():
 def main():
     st.sidebar.title("QTI Workbench Navigation")
     st.sidebar.markdown("---")
-    # DEFINITIVE FIX for data persistence: Use st.session_state with simple DataFrames.
-    # This is the most stable and recommended approach for Streamlit apps.
     if 'data_loaded' not in st.session_state:
         st.session_state['config'] = load_config()
         st.session_state['process_data'] = generate_process_data()
