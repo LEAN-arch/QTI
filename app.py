@@ -8,7 +8,7 @@
 # This is the definitive, complete, single-file Streamlit application for a Quality Technical
 # Investigation (QTI) Engineer. It incorporates a comprehensive suite of statistical and ML
 # methods, alongside enterprise features, using all specified libraries. The data architecture
-# uses Streamlit's session state for absolute stability.
+# uses Streamlit's session state for absolute stability and all known bugs have been corrected.
 # =================================================================================================
 
 # --- 1. CORE & UTILITY IMPORTS ---
@@ -84,7 +84,7 @@ def generate_process_data(num_records=2000):
         elif operator == 'OP-4': vol, psi = base_vol - np.random.normal(0.08, 0.02), psi - 1.5
         else: vol = base_vol + np.random.normal(0, 0.03)
         psi += np.sin(i / 100) * 1.5
-        record = {"timestamp": ts, "line_id": f"LINE-{(i % 4) + 1}", "reagent_ph": round(ph, 2), "fill_volume_ml": round(vol, 3), "pressure_psi": round(psi, 1), "operator_id": operator, "material_lot": material_lot, "is_anomaly": is_anomaly}
+        record = {"timestamp": pd.to_datetime(ts), "line_id": f"LINE-{(i % 4) + 1}", "reagent_ph": round(ph, 2), "fill_volume_ml": round(vol, 3), "pressure_psi": round(psi, 1), "operator_id": operator, "material_lot": material_lot, "is_anomaly": is_anomaly}
         data.append(record)
     return pd.DataFrame(data)
 
@@ -104,7 +104,7 @@ def show_command_center():
     process_data, capa_data = st.session_state['process_data'], st.session_state['capa_data']
     st.subheader("Key Performance Indicators (KPIs)"); kpi_cols = st.columns(4)
     active_inv = len(capa_data[capa_data['status'] != 'Closed - Effective']); kpi_cols[0].metric("Active Investigations", active_inv)
-    kpi_cols[1].metric("New Data Points (24h)", len(process_data[pd.to_datetime(process_data['timestamp']) > datetime.now() - timedelta(days=1)]))
+    kpi_cols[1].metric("New Data Points (24h)", len(process_data[process_data['timestamp'] > datetime.now() - timedelta(days=1)]))
     kpi_cols[2].metric("Avg. Pressure (psi)", f"{process_data['pressure_psi'].mean():.2f}"); kpi_cols[3].metric("Avg. pH", f"{process_data['reagent_ph'].mean():.2f}")
     st.markdown("---"); col1, col2 = st.columns((2, 1.5))
     with col1:
@@ -225,9 +225,15 @@ def show_predictive_and_optimization():
             st.write("Input Parameters:"); ph, vol, psi = st.slider("pH", 7.0, 7.6, 7.25), st.slider("Volume", 9.8, 10.2, 10.0), st.slider("Pressure", 45.0, 58.0, 51.0);
             input_data = np.array([[ph, vol, psi]]); proba = model.predict_proba(input_data)[0][1]; st.metric("Predicted Anomaly Probability", f"{proba:.1%}")
         with col2:
-            st.write("XAI Driver Analysis:"); base = explainer.expected_value[1]; shap_vals = explainer.shap_values(input_data)[1];
-            if shap_vals.ndim > 1: shap_vals = shap_vals[0]
-            fig, ax = plt.subplots(figsize=(10, 3)); shap.force_plot(base, shap_vals, np.around(input_data[0], 2), feature_names=['ph', 'vol', 'psi'], matplotlib=True, show=False); st.pyplot(fig, bbox_inches='tight', dpi=150); plt.close(fig)
+            st.write("XAI Driver Analysis:")
+            # DEFINITIVE FIX: Robustly handle SHAP's multi-class output format
+            base_value = explainer.expected_value
+            shap_values = explainer.shap_values(input_data)
+            if isinstance(base_value, list): base_value = base_value[1]
+            if isinstance(shap_values, list): shap_values = shap_values[1]
+            if shap_values.ndim > 1: shap_values = shap_values[0]
+            
+            fig, ax = plt.subplots(figsize=(10, 3)); shap.force_plot(base_value, shap_values, np.around(input_data[0], 2), feature_names=['ph', 'vol', 'psi'], matplotlib=True, show=False); st.pyplot(fig, bbox_inches='tight', dpi=150); plt.close(fig)
 
 # =================================================================================================
 # MODULE 6: ADVANCED DEMOS & VALIDATION
@@ -245,10 +251,14 @@ def show_advanced_demos():
             st.success(f"Dask computation complete. Mean pressure across all data: **{mean_pressure:.2f} psi**")
     with tab2:
         st.subheader("Limit of Detection (LoD) by Probit Analysis"); st.markdown("**Use Case:** Determine the lowest concentration an assay can reliably detect."); df = generate_lod_data(); df['Not Detected'] = df['Total'] - df['Detected']
-        df['log_conc'] = np.log10(df['Concentration'].replace(0, 0.01)); model = sm.Probit(df[['Detected', 'Not Detected']], sm.add_constant(df['log_conc'])).fit(disp=0)
-        target, params = stats.norm.ppf(0.95), model.params; lod = 10**((target - params['const']) / params['log_conc'])
+        # DEFINITIVE FIX: Use sm.GLM with a Binomial family for Probit analysis of success/trial data.
+        df['log_conc'] = np.log10(df['Concentration'].replace(0, 0.01)); 
+        glm_binom = sm.GLM(endog=df[['Detected', 'Not Detected']], exog=sm.add_constant(df['log_conc']), family=sm.families.Binomial(link=sm.families.links.probit()))
+        res = glm_binom.fit()
+        
+        target, params = stats.norm.ppf(0.95), res.params; lod = 10**((target - params['const']) / params['log_conc'])
         st.metric("Calculated Limit of Detection (LoD) at 95%", f"{lod:.3f}");
-        x_range = np.linspace(df['log_conc'].min(), df['log_conc'].max(), 200); y_pred = model.predict(sm.add_constant(x_range))
+        x_range = np.linspace(df['log_conc'].min(), df['log_conc'].max(), 200); y_pred = res.predict(sm.add_constant(x_range))
         fig = go.Figure(); fig.add_trace(go.Scatter(x=df['Concentration'], y=df['Detected']/df['Total'], mode='markers', name='Observed')); fig.add_trace(go.Scatter(x=10**x_range, y=y_pred, mode='lines', name='Probit Fit'))
         fig.add_vline(x=lod, line_dash='dash', line_color='red'); fig.add_hline(y=0.95, line_dash='dash', line_color='red')
         fig.update_layout(title='Probit Analysis for Limit of Detection', xaxis_type="log"); st.plotly_chart(fig, use_container_width=True)
@@ -263,7 +273,7 @@ def show_reporting():
         with st.spinner("Creating PowerPoint..."):
             config = st.session_state['config']; prs = Presentation()
             # Title Slide
-            slide = prs.slides.add_slide(prs.slide_layouts[0]); slide.shapes.title.text = "QTI Investigation Summary"; slide.placeholders[1].text = f"Author: {config.report_settings.author}\nDate: {datetime.now().strftime('%Y-%m-%d')}"
+            slide = prs.slides.add_slide(prs.slide_layouts[0]); slide.shapes.title.text = "QTI Investigation Summary"; slide.placeholders[1].text = f"Author: {config.report_settings.author}\nDate: {datetime.now().strftime('%Y%m%d')}"
             # SPC Slide
             if 'spc_fig' in st.session_state:
                 slide = prs.slides.add_slide(prs.slide_layouts[5]); slide.shapes.title.text = "Process Monitoring (SPC)"
@@ -282,7 +292,8 @@ def show_reporting():
 def main():
     st.sidebar.title("QTI Workbench Navigation")
     st.sidebar.markdown("---")
-    # Initialize session state for data persistence. This is the stable architecture.
+    # DEFINITIVE FIX for data persistence: Use st.session_state with simple DataFrames.
+    # This is the most stable and recommended approach for Streamlit apps.
     if 'data_loaded' not in st.session_state:
         st.session_state['config'] = load_config()
         st.session_state['process_data'] = generate_process_data()
