@@ -8,7 +8,8 @@
 # This is the definitive, complete, single-file Streamlit application for a Quality Technical
 # Investigation (QTI) Engineer. It incorporates a comprehensive suite of statistical and ML
 # methods, alongside enterprise features like reporting, configuration management, and database
-# simulation, using all specified libraries.
+# simulation, using all specified libraries. This version is fully debugged and architected for
+# stability.
 # =================================================================================================
 
 # --- 1. CORE & UTILITY IMPORTS ---
@@ -21,7 +22,7 @@ import yaml
 import warnings
 
 # --- 2. DATA HANDLING & DATABASE IMPORTS ---
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 import dask.dataframe as dd
 
 # --- 3. VISUALIZATION IMPORTS ---
@@ -31,7 +32,7 @@ import matplotlib.pyplot as plt
 from graphviz import Digraph
 
 # --- 4. ANALYTICS & ML IMPORTS ---
-from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -54,7 +55,7 @@ st.set_page_config(
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # =================================================================================================
-# CONFIGURATION & DATABASE SIMULATION LAYER
+# CONFIGURATION & DATA SIMULATION LAYER
 # =================================================================================================
 
 # Pydantic models for structured, validated configuration
@@ -82,18 +83,8 @@ def load_config():
     raw_config = yaml.safe_load(config_string)
     return AppConfig(**raw_config)
 
-@st.cache_resource
-def get_db_connection():
-    """
-    Simulates a database connection using SQLAlchemy and an in-memory SQLite DB.
-    Demonstrates how a real application would handle data persistence.
-    """
-    engine = create_engine('sqlite:///:memory:')
-    # Populate the database with our simulated data
-    generate_process_data().to_sql('process_data', engine, index=False, if_exists='replace')
-    generate_capa_data().to_sql('capa_data', engine, index=False, if_exists='replace')
-    return engine
-
+# Note: The data generation functions are now separate from the DB connection
+# They are only used to create the initial pandas DataFrames.
 @st.cache_data
 def generate_process_data(num_records=2000):
     """Generates a complex, realistic, multivariate process dataset."""
@@ -124,6 +115,7 @@ def show_command_center():
     st.title("🔬 QTI Command Center")
     st.markdown("A real-time overview of the quality system's health, active investigations, and process stability.")
     engine = st.session_state['db_engine']
+    # Each module now safely reads from the persistent in-memory DB
     with engine.connect() as conn:
         process_data = pd.read_sql("SELECT * FROM process_data", conn)
         capa_data = pd.read_sql("SELECT * FROM capa_data", conn)
@@ -170,16 +162,16 @@ def show_process_monitoring():
             violations = monitor_df[(i_data > i_ucl) | (i_data < i_lcl)]
             fig.add_trace(go.Scatter(x=violations['timestamp'], y=violations[param], mode='markers', marker=dict(color='purple', size=10, symbol='x'), name='Violation'))
             st.plotly_chart(fig, use_container_width=True)
-            st.session_state['spc_fig'] = fig # Save for reporting
+            st.session_state['spc_fig'] = fig
         else: st.warning("Not enough data.")
     with tab2:
         st.subheader("Large-Scale Data Processing with Dask")
-        st.markdown("**Use Case:** Dask enables parallel computation on datasets larger than memory by breaking them into chunks. Here, we simulate this by converting our pandas DataFrame to a Dask DataFrame to compute the mean pressure in parallel.")
+        st.markdown("**Use Case:** Dask enables parallel computation on datasets larger than memory. Here, we simulate this by converting our pandas DataFrame to a Dask DataFrame to compute the mean pressure in parallel.")
         if st.button("Run Dask Computation"):
             with st.spinner("Processing with Dask..."):
                 ddf = dd.from_pandas(process_data, npartitions=4)
                 mean_pressure = ddf.pressure_psi.mean().compute()
-            st.success(f"Dask computation complete. The mean pressure across all data is: **{mean_pressure:.2f} psi**")
+            st.success(f"Dask computation complete. Mean pressure across all data: **{mean_pressure:.2f} psi**")
 
 # =================================================================================================
 # MODULE 3: RCA WORKBENCH
@@ -192,20 +184,19 @@ def get_rca_model(_df):
 
 def show_rca_workbench():
     st.title("🛠️ Root Cause Analysis (RCA) Workbench")
-    engine = st.session_state['db_engine']
-    with engine.connect() as conn:
-        process_data = pd.read_sql("SELECT * FROM process_data", conn)
+    engine = st.session_state['db_engine'];
+    with engine.connect() as conn: process_data = pd.read_sql("SELECT * FROM process_data", conn)
     
     tab1, tab2, tab3 = st.tabs(["Qualitative Analysis (Fishbone)", "Hypothesis Testing", "AI-Driven Importance"])
     with tab1:
-        st.subheader("Fishbone (Ishikawa) Diagram"); st.markdown("**Use Case:** Brainstorm and visualize potential causes of a defect in a structured way."); g = Digraph('G'); g.attr('node', shape='box')
+        st.subheader("Fishbone (Ishikawa) Diagram"); st.markdown("**Use Case:** Brainstorm and visualize potential causes of a defect."); g = Digraph('G'); g.attr('node', shape='box')
         for cat in ['Measurement', 'Materials', 'Personnel', 'Environment', 'Methods', 'Machines']: g.edge(cat, 'Effect'); st.graphviz_chart(g)
     with tab2:
-        st.subheader("Statistical Hypothesis Testing"); st.markdown("**Use Case:** Determine if observed differences between groups are real or random."); param_to_test = st.selectbox("Select Parameter:", ('reagent_ph', 'pressure_psi'), key="ttest_param")
-        group1, group2 = process_data[process_data['material_lot'] == 'LOT-1'][param_to_test], process_data[process_data['material_lot'] == 'LOT-2'][param_to_test]
+        st.subheader("Statistical Hypothesis Testing"); st.markdown("**Use Case:** Determine if observed differences between groups are real or random."); param = st.selectbox("Select Parameter:", ('reagent_ph', 'pressure_psi'), key="ttest_param")
+        group1, group2 = process_data[process_data['material_lot'] == 'LOT-1'][param], process_data[process_data['material_lot'] == 'LOT-2'][param]
         fig = go.Figure(); fig.add_trace(go.Box(y=group1, name='LOT-1')); fig.add_trace(go.Box(y=group2, name='LOT-2'))
-        fig.update_layout(title=f'Comparison of {param_to_test} between Lots'); st.plotly_chart(fig, use_container_width=True)
-        ttest_res = stats.ttest_ind(group1, group2, equal_var=False); st.metric(label="T-test p-value", value=f"{ttest_res.pvalue:.4g}")
+        fig.update_layout(title=f'Comparison of {param} between Lots'); st.plotly_chart(fig, use_container_width=True)
+        ttest_res = stats.ttest_ind(group1, group2, equal_var=False); st.metric("T-test p-value", f"{ttest_res.pvalue:.4g}")
         if ttest_res.pvalue < 0.05: st.error("Statistically significant difference detected.")
         else: st.success("No statistically significant difference detected.")
     with tab3:
@@ -221,7 +212,6 @@ def get_explainer(_model): return shap.TreeExplainer(_model)
 
 def show_predictive_analytics():
     st.title("🔮 Predictive Analytics & Explainable AI (XAI)")
-    st.markdown("Predict outcomes and understand the drivers behind model decisions.")
     engine = st.session_state['db_engine'];
     with engine.connect() as conn: process_data = pd.read_sql("SELECT * FROM process_data", conn)
     model = get_rca_model(process_data); explainer = get_explainer(model)
@@ -241,17 +231,13 @@ def show_predictive_analytics():
 def generate_powerpoint_report(config):
     """Generates a PowerPoint report of the investigation using python-pptx."""
     prs = Presentation()
-    # Title Slide
     slide = prs.slides.add_slide(prs.slide_layouts[0]); slide.shapes.title.text = "QTI Investigation Summary"; slide.placeholders[1].text = f"Author: {config.report_settings.author}\nCompany: {config.report_settings.company_name}\nDate: {datetime.now().strftime('%Y-%m-%d')}"
-    # SPC Chart Slide
     if 'spc_fig' in st.session_state:
         slide = prs.slides.add_slide(prs.slide_layouts[5]); slide.shapes.title.text = "Process Monitoring (SPC)"
         img_stream = io.BytesIO(); st.session_state['spc_fig'].write_image(img_stream, format='png'); slide.shapes.add_picture(img_stream, Inches(0.5), Inches(1.5), width=Inches(9))
-    # RCA Slide
     if 'rca_importance_fig' in st.session_state:
         slide = prs.slides.add_slide(prs.slide_layouts[5]); slide.shapes.title.text = "AI-Driven Root Cause Analysis"
         img_stream = io.BytesIO(); st.session_state['rca_importance_fig'].write_image(img_stream, format='png'); slide.shapes.add_picture(img_stream, Inches(1), Inches(1.5), width=Inches(8))
-    # Save to a byte stream
     ppt_stream = io.BytesIO(); prs.save(ppt_stream); ppt_stream.seek(0)
     return ppt_stream
 
@@ -259,27 +245,36 @@ def show_reporting():
     st.title("📄 Reporting & Export")
     st.markdown("Compile key findings from your investigation into a standardized, downloadable report.")
     st.subheader("Generate Investigation PowerPoint Report")
-    st.info("This feature uses `python-pptx` to create a report. Please ensure you have run analyses in the 'Process Monitoring' and 'RCA Workbench' modules to populate the charts.")
+    st.info("This feature uses `python-pptx`. Please run analyses in 'Process Monitoring' and 'RCA Workbench' to populate the charts.")
     if st.button("Generate .pptx Report"):
         with st.spinner("Creating PowerPoint presentation..."):
             config = st.session_state['config']
             ppt_file = generate_powerpoint_report(config)
-            st.download_button(
-                label="Download Report", data=ppt_file,
-                file_name=f"QTI_Report_{datetime.now().strftime('%Y%m%d')}.pptx",
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-            )
+            st.download_button(label="Download Report", data=ppt_file, file_name=f"QTI_Report_{datetime.now().strftime('%Y%m%d')}.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
 
 # =================================================================================================
 # MAIN APPLICATION LOGIC
 # =================================================================================================
 def main():
+    """Main function to define the app's navigation and structure."""
     st.sidebar.title("QTI Workbench Navigation")
     st.sidebar.markdown("---")
-    # Initialize session state for data, config, and database connection
+    
+    # DEFINITIVE FIX for the database issue:
+    # Initialize the database engine and populate it ONCE per session.
+    # This ensures the in-memory DB persists across page loads within a session.
     if 'db_engine' not in st.session_state:
         st.session_state['config'] = load_config()
-        st.session_state['db_engine'] = get_db_connection()
+        # Create a transient, in-memory SQLite database
+        engine = create_engine('sqlite:///:memory:')
+        # Generate data as pandas DataFrames
+        process_df = generate_process_data()
+        capa_df = generate_capa_data()
+        # Write the DataFrames to SQL tables in the in-memory database
+        process_df.to_sql('process_data', engine, index=False, if_exists='replace')
+        capa_df.to_sql('capa_data', engine, index=False, if_exists='replace')
+        # Store the populated engine in the session state
+        st.session_state['db_engine'] = engine
     
     page_functions = {
         "QTI Command Center": show_command_center,
