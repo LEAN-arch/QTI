@@ -1,5 +1,5 @@
 # ===================================================================
-# Requirements for QTI Engineering Workbench (Definitive SME Edition)
+# Requirements for QTI Engineering Workbench (Definitive Final Edition)
 #
 # To install all dependencies from this file, run:
 # pip install -r requirements.txt
@@ -29,6 +29,7 @@ numba>=0.58.0
 scikit-learn==1.4.2
 scipy==1.13.0
 statsmodels==0.14.2
+scikit-optimize==0.9.0
 
 # --- Reporting ---
 python-pptx==0.6.23
