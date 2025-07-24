@@ -1,5 +1,5 @@
 # =================================================================================================
-# QTI ENGINEERING WORKBENCH - Definitive Edition
+# QTI ENGINEERING WORKBENCH - Definitive Final Edition
 #
 # AUTHOR: Subject Matter Expert AI
 # DATE: 2024-07-23
@@ -8,7 +8,7 @@
 # This is the definitive, complete, single-file Streamlit application for a Quality Technical
 # Investigation (QTI) Engineer. It incorporates a comprehensive suite of statistical and ML
 # methods, alongside enterprise features, using all specified libraries. The data architecture
-# has been redesigned for absolute stability within the Streamlit framework.
+# uses Streamlit's session state for absolute stability.
 # =================================================================================================
 
 # --- 1. CORE & UTILITY IMPORTS ---
@@ -104,7 +104,7 @@ def show_command_center():
     process_data, capa_data = st.session_state['process_data'], st.session_state['capa_data']
     st.subheader("Key Performance Indicators (KPIs)"); kpi_cols = st.columns(4)
     active_inv = len(capa_data[capa_data['status'] != 'Closed - Effective']); kpi_cols[0].metric("Active Investigations", active_inv)
-    kpi_cols[1].metric("New Data Points (24h)", len(process_data[process_data['timestamp'] > datetime.now() - timedelta(days=1)]))
+    kpi_cols[1].metric("New Data Points (24h)", len(process_data[pd.to_datetime(process_data['timestamp']) > datetime.now() - timedelta(days=1)]))
     kpi_cols[2].metric("Avg. Pressure (psi)", f"{process_data['pressure_psi'].mean():.2f}"); kpi_cols[3].metric("Avg. pH", f"{process_data['reagent_ph'].mean():.2f}")
     st.markdown("---"); col1, col2 = st.columns((2, 1.5))
     with col1:
@@ -230,15 +230,14 @@ def show_predictive_and_optimization():
             fig, ax = plt.subplots(figsize=(10, 3)); shap.force_plot(base, shap_vals, np.around(input_data[0], 2), feature_names=['ph', 'vol', 'psi'], matplotlib=True, show=False); st.pyplot(fig, bbox_inches='tight', dpi=150); plt.close(fig)
 
 # =================================================================================================
-# MODULE 6: ADVANCED DEMOS
+# MODULE 6: ADVANCED DEMOS & VALIDATION
 # =================================================================================================
 def show_advanced_demos():
-    st.title("⚙️ Advanced Demos & Library Integrations")
-    st.markdown("This module contains self-contained demonstrations of specific library integrations.")
+    st.title("⚙️ Advanced Demos & Validation")
+    st.markdown("This module contains self-contained demonstrations of library integrations and specialized validation tasks.")
     tab1, tab2 = st.tabs(["Data Scalability (Dask)", "Assay Validation (LoD)"])
     with tab1:
-        st.subheader("Large-Scale Data Processing with Dask")
-        st.markdown("**Use Case:** Dask enables parallel computation on datasets larger than memory. Here, we simulate this by converting our pandas DataFrame to a Dask DataFrame to compute the mean pressure in parallel.")
+        st.subheader("Large-Scale Data Processing with Dask"); st.markdown("**Use Case:** Dask enables parallel computation on datasets larger than memory.")
         if st.button("Run Dask Computation"):
             with st.spinner("Processing with Dask..."):
                 ddf = dd.from_pandas(st.session_state['process_data'], npartitions=4)
