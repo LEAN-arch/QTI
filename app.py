@@ -496,6 +496,11 @@ with tab4:
                 X = pd.get_dummies(rca_df[features], columns=categorical_features, drop_first=True)
                 y = rca_df[target].astype(int)
 
+                # Apply scaling to numerical features if needed
+                from sklearn.preprocessing import StandardScaler
+                scaler = StandardScaler()
+                X[numerical_features] = scaler.fit_transform(X[numerical_features])
+
                 # Split data
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y, test_size=0.3, random_state=42, stratify=y
@@ -507,9 +512,17 @@ with tab4:
                 )
                 model.fit(X_train, y_train)
 
-                # Calculate SHAP values using the same X_test
+                # Calculate SHAP values using X_test
                 explainer = shap.TreeExplainer(model)
                 shap_values = explainer.shap_values(X_test)
+
+                # Verify shape compatibility for SHAP plot
+                if shap_values[1].shape[1] != X_test.shape[1]:
+                    st.error(
+                        f"SHAP values shape {shap_values[1].shape} does not match "
+                        f"data shape {X_test.shape}. Check preprocessing steps."
+                    )
+                    raise ValueError("SHAP values and data matrix shape mismatch")
 
                 # SHAP Summary Plot (Beeswarm)
                 st.markdown("**SHAP Summary Plot**")
@@ -519,7 +532,7 @@ with tab4:
                     "blue indicates low values. Positive SHAP values push predictions towards 'Anomaly'."
                 )
                 fig, ax = plt.subplots(figsize=(10, 6))
-                # Use X_test directly to ensure feature alignment with shap_values
+                # Use X_test to match shap_values
                 shap.summary_plot(shap_values[1], X_test, show=False, max_display=10)
                 st.pyplot(fig)
                 plt.close(fig)
@@ -530,7 +543,7 @@ with tab4:
                     'importance': model.feature_importances_
                 }).sort_values('importance', ascending=False).head(10)
 
-                st.markdown("**Feature Importance**")
+                st.markdown("**Global Feature Importance**")
                 st.markdown("This chart shows the relative importance of each feature in predicting anomalies for the selected period.")
                 fig_bar = px.bar(
                     importances,
