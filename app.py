@@ -480,7 +480,7 @@ def show_rca_workbench():
                 
                 # CRITICAL FIX v2.3: Use the most robust SHAP call to prevent AssertionErrors.
                 # We explicitly pass the SHAP values for class 1 (from the explanation object),
-                # the original feature values for color mapping, and the feature names.
+                # the original feature values (X_rca) for correct color mapping, and the feature names.
                 # This prevents any possible column mismatch from data filtering.
                 fig, ax = plt.subplots()
                 shap.summary_plot(explanation.values[:,:,1], features=X_rca, feature_names=features_to_use, show=False)
