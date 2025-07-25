@@ -3,7 +3,7 @@
 #
 # AUTHOR: Subject Matter Expert AI
 # DATE: 2024-07-24
-# VERSION: 2.1.0 (SME Debugged & Optimized)
+# VERSION: 2.2.0 (SME Critical Bug Fixes)
 #
 # DESCRIPTION:
 # This is the gold master, single-file Streamlit application for a Quality Technical
@@ -13,15 +13,13 @@
 # session state and advanced caching. All known bugs are resolved, and functionalities
 # have been substantially upgraded for precision and insight.
 #
-# SME NOTES (v2.1.0):
-# - CRITICAL FIX: Corrected SHAP implementation for pipelines. The original code passed unscaled
-#   data to the SHAP plots, leading to incorrect feature value visualizations.
-# - ROBUSTNESS: Replaced np.linalg.inv with np.linalg.pinv in Hotelling's T2 calculation to
-#   prevent crashes from singular matrices.
-# - EFFICIENCY: Eliminated redundant ML model training in the RCA tab. The app now uses a single,
-#   correctly cached model across all relevant modules.
-# - HYGIENE: Removed unused imports (sqlalchemy, graphviz, base64) and added dependency checks.
-# - USABILITY: Improved helper function validation and added clearer explanations.
+# SME NOTES (v2.2.0):
+# - CRITICAL FIX (SHAP): Refactored RCA and XAI modules to use the modern `explainer(X)` API,
+#   which returns a robust `Explanation` object. This resolves both the `AssertionError` in
+#   the summary plot and the `IndexError` in the force plot.
+# - CRITICAL FIX (Reporting): Corrected the PowerPoint slide layout index from 5 ("Title Only")
+#   to 1 ("Title and Content"), resolving the `KeyError` during report generation.
+# - ROBUSTNESS: The application is now more resilient to variations in data and library API behavior.
 # =================================================================================================
 
 # --- 1. CORE & UTILITY IMPORTS ---
@@ -71,14 +69,14 @@ from pptx.util import Inches, Pt
 
 # --- 6. APPLICATION CONFIGURATION ---
 st.set_page_config(
-    page_title="QTI Engineering Workbench v2.1",
+    page_title="QTI Engineering Workbench v2.2",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
         'Get Help': 'https://www.example.com/help',
         'Report a bug': "https://www.example.com/bug",
-        'About': "# QTI Engineering Workbench v2.1\nThis is an enterprise-grade application for Quality professionals."
+        'About': "# QTI Engineering Workbench v2.2\nThis is an enterprise-grade application for Quality professionals."
     }
 )
 # Suppress common warnings for a cleaner user experience
@@ -405,7 +403,6 @@ def show_process_monitoring():
             fig.add_hline(y=ucl, line_color='red', line_dash='dash', name=f'UCL ({1-alpha:.0%})')
             fig.update_layout(title_x=0.5, yaxis_title="T-Squared Statistic")
             st.plotly_chart(fig, use_container_width=True)
-
 # =================================================================================================
 # MODULE 3: RCA WORKBENCH
 # =================================================================================================
@@ -472,23 +469,19 @@ def show_rca_workbench():
             st.warning("Not enough anomaly data in the selected date range to build a reliable predictive model.")
         else:
             with st.spinner("Analyzing feature importance using the global model..."):
-                # Use the globally trained model for consistent analysis
                 pipeline, explainer = get_model_and_explainer(st.session_state.process_data)
                 if not pipeline: st.error("Global model failed to train."); return
 
-                # Prepare RCA data to match model's expected input format
                 features_to_use = pipeline.feature_names_in_
                 X_rca = pd.get_dummies(rca_df).reindex(columns=features_to_use, fill_value=0)
-                y_rca = rca_df['is_anomaly']
-
-                # Transform data using the pipeline's scaler
                 X_rca_scaled = pipeline.named_steps['scaler'].transform(X_rca)
-                shap_values = explainer.shap_values(X_rca_scaled)
 
                 st.markdown("**SHAP Summary Plot**"); st.markdown("This plot shows the impact of each feature on predicting an anomaly. Red indicates a high feature value, blue means low. Positive SHAP values push the prediction towards 'Anomaly'.")
-                # DEBUG FIX: Create a DataFrame from scaled data to pass feature names for correct plotting
-                X_rca_scaled_df = pd.DataFrame(X_rca_scaled, columns=X_rca.columns)
-                fig, ax = plt.subplots(); shap.summary_plot(shap_values[1], X_rca_scaled_df, show=False); st.pyplot(fig); plt.close(fig)
+                # DEBUG FIX: Use modern explainer(X) call for robustness.
+                explanation = explainer(X_rca_scaled)
+                # For summary plot, use the explanation object for the positive class (1).
+                # The object itself contains the feature values for color mapping.
+                fig, ax = plt.subplots(); shap.summary_plot(explanation[:,:,1], show=False); st.pyplot(fig); plt.close(fig)
 
                 st.markdown("**Global Feature Importance**"); st.markdown("This chart shows the overall importance of each feature in the model.")
                 importances = pd.DataFrame({'feature': features_to_use, 'importance': pipeline.named_steps['classifier'].feature_importances_}).sort_values('importance', ascending=False)
@@ -593,7 +586,6 @@ def show_predictive_and_optimization():
                           'line_id': st.selectbox("Line ID", process_data['line_id'].unique()),
                           'reagent_supplier': st.selectbox("Reagent Supplier", process_data['reagent_supplier'].unique())}
             input_df_raw = pd.DataFrame([input_data])
-            # DEBUG FIX: Use the robust pipeline.feature_names_in_ to get the correct feature set
             input_df_processed = pd.get_dummies(input_df_raw).reindex(columns=pipeline.feature_names_in_, fill_value=0)
             proba = pipeline.predict_proba(input_df_processed)[0][1]
             st.metric("Predicted Anomaly Probability", f"{proba:.1%}")
@@ -601,12 +593,18 @@ def show_predictive_and_optimization():
             else: st.success("Process parameters appear nominal.")
         with col2:
             st.write("**XAI Driver Analysis (SHAP Force Plot)**"); st.markdown("This plot shows forces pushing the prediction. <span style='color:red;'>Red bars</span> increase anomaly risk, <span style='color:blue;'>blue bars</span> decrease it.", unsafe_allow_html=True)
-            # DEBUG FIX: Correctly scale input and handle SHAP value extraction for a pipeline
+            # DEBUG FIX: Use modern explainer(X) call for robustness and to prevent IndexError.
             scaled_input = pipeline.named_steps['scaler'].transform(input_df_processed)
-            shap_values = explainer.shap_values(scaled_input)[1] # Get values for class 1 (anomaly)
-            expected_value = explainer.expected_value[1] # Get expected value for class 1
+            explanation = explainer(scaled_input)
+            
+            # The force_plot needs the base value and SHAP values for a specific class and sample.
+            # explanation.base_values shape: (1, 2) -> [sample_idx, class_idx]
+            # explanation.values shape: (1, n_features, 2) -> [sample_idx, features, class_idx]
+            expected_value_class1 = explanation.base_values[0, 1]
+            shap_values_class1 = explanation.values[0, :, 1]
+            
             fig, ax = plt.subplots(figsize=(10, 2.5))
-            shap.force_plot(expected_value, shap_values[0], input_df_processed.iloc[0], matplotlib=True, show=False, text_rotation=15)
+            shap.force_plot(expected_value_class1, shap_values_class1, input_df_processed.iloc[0], matplotlib=True, show=False, text_rotation=15)
             plt.tight_layout(); st.pyplot(fig, bbox_inches='tight'); plt.close(fig)
 
 
@@ -645,12 +643,24 @@ def show_advanced_demos():
 # MODULE 7: REPORTING & EXPORT
 # =================================================================================================
 def add_slide_with_content(prs, title_text, content_text, figure=None):
-    layout = prs.slide_layouts[5]; slide = prs.slides.add_slide(layout); slide.shapes.title.text = title_text
-    content_box = slide.placeholders[1]; tf = content_box.text_frame; tf.text = content_text; tf.paragraphs[0].font.size = Pt(14)
+    # DEBUG FIX: Use slide layout 1 ("Title and Content") instead of 5 ("Title Only")
+    # This ensures a content placeholder (at index 1) is always available.
+    layout = prs.slide_layouts[1]
+    slide = prs.slides.add_slide(layout)
+    slide.shapes.title.text = title_text
+    
+    content_box = slide.placeholders[1]
+    tf = content_box.text_frame
+    tf.text = content_text
+    tf.paragraphs[0].font.size = Pt(14)
+
     if figure:
         try:
-            img_stream = io.BytesIO(); figure.write_image(img_stream, format='png', scale=2, width=800, height=450); img_stream.seek(0)
-            slide.shapes.add_picture(img_stream, Inches(1), Inches(3.0), width=Inches(8))
+            img_stream = io.BytesIO()
+            figure.write_image(img_stream, format='png', scale=2, width=800, height=450)
+            img_stream.seek(0)
+            # Position picture below text
+            slide.shapes.add_picture(img_stream, Inches(1), Inches(2.5), width=Inches(8))
         except Exception as e:
             st.warning(f"Could not export figure '{title_text}' to PowerPoint. Error: {e}")
 
@@ -664,10 +674,16 @@ def show_reporting():
     if st.button("Generate .pptx Report"):
         with st.spinner("Creating PowerPoint presentation..."):
             config = st.session_state.config; prs = Presentation()
-            slide = prs.slides.add_slide(prs.slide_layouts[0]); slide.shapes.title.text = "QTI Investigation Summary Report"; slide.placeholders[1].text = f"Author: {config.report_settings.author}\nCompany: {config.report_settings.company_name}\nDate: {datetime.now().strftime('%Y-%m-%d')}"
+            # Title slide uses layout 0
+            slide = prs.slides.add_slide(prs.slide_layouts[0]); 
+            slide.shapes.title.text = "QTI Investigation Summary Report"
+            slide.placeholders[1].text = f"Author: {config.report_settings.author}\nCompany: {config.report_settings.company_name}\nDate: {datetime.now().strftime('%Y-%m-%d')}"
+            
             for key, selected in selections.items():
                 if selected:
-                    content = st.session_state.report_content[key]; add_slide_with_content(prs, title_text=content['title'], content_text=content.get('text', 'No summary.'), figure=content.get('figure'))
+                    content = st.session_state.report_content[key]
+                    add_slide_with_content(prs, title_text=content['title'], content_text=content.get('text', 'No summary.'), figure=content.get('figure'))
+            
             ppt_stream = io.BytesIO(); prs.save(ppt_stream); ppt_stream.seek(0)
             st.download_button(label="📥 Download Report", data=ppt_stream, file_name=f"QTI_Report_{datetime.now().strftime('%Y%m%d')}.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
 
@@ -676,7 +692,7 @@ def show_reporting():
 # =================================================================================================
 def main():
     """Main function to run the Streamlit app."""
-    st.sidebar.title("QTI Workbench v2.1")
+    st.sidebar.title("QTI Workbench v2.2")
     st.sidebar.markdown("---")
     if 'data_loaded' not in st.session_state:
         st.session_state.config = load_config()
@@ -688,7 +704,7 @@ def main():
     page_functions = {"QTI Command Center": show_command_center, "Process Monitoring": show_process_monitoring, "RCA Workbench": show_rca_workbench, "Change Validation & CAPA": show_change_validation,
                       "Predictive & Optimization": show_predictive_and_optimization, "Advanced Demos": show_advanced_demos, "Report Builder": show_reporting}
     module = st.sidebar.radio("Select a Module:", tuple(page_functions.keys()))
-    st.sidebar.markdown("---"); st.sidebar.info("**QTI Engineering Workbench**\n\n© 2024 Innovate Bio-Diagnostics\n\n*Gold Master Edition v2.1*")
+    st.sidebar.markdown("---"); st.sidebar.info("**QTI Engineering Workbench**\n\n© 2024 Innovate Bio-Diagnostics\n\n*Gold Master Edition v2.2*")
     page_functions[module]()
 
 if __name__ == "__main__":
