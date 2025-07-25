@@ -480,23 +480,23 @@ with tab4:
     else:
         with st.spinner("Training model and calculating SHAP values..."):
             try:
-                # Define features, ensuring only valid columns are included
+                # Define features
                 numerical_features = ['reagent_ph', 'fill_volume_ml', 'pressure_psi']
                 categorical_features = [col for col in rca_df.columns if col in rca_cats and rca_df[col].nunique() > 1]
                 features = numerical_features + categorical_features
                 target = 'is_anomaly'
 
-                # Verify all features exist in the dataframe
+                # Verify all features exist
                 missing_features = [f for f in features if f not in rca_df.columns]
                 if missing_features:
                     st.error(f"Missing features in dataset: {missing_features}")
                     raise ValueError(f"Required features not found: {missing_features}")
 
-                # Prepare data
+                # Prepare data with consistent encoding
                 X = pd.get_dummies(rca_df[features], columns=categorical_features, drop_first=True)
-                y = rca_df[target].astype(int)  # Ensure target is binary integer
+                y = rca_df[target].astype(int)
 
-                # Split data with balanced stratification
+                # Split data
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y, test_size=0.3, random_state=42, stratify=y
                 )
@@ -507,7 +507,7 @@ with tab4:
                 )
                 model.fit(X_train, y_train)
 
-                # Calculate SHAP values
+                # Calculate SHAP values using the same X_test
                 explainer = shap.TreeExplainer(model)
                 shap_values = explainer.shap_values(X_test)
 
@@ -519,15 +519,16 @@ with tab4:
                     "blue indicates low values. Positive SHAP values push predictions towards 'Anomaly'."
                 )
                 fig, ax = plt.subplots(figsize=(10, 6))
+                # Use X_test directly to ensure feature alignment with shap_values
                 shap.summary_plot(shap_values[1], X_test, show=False, max_display=10)
                 st.pyplot(fig)
                 plt.close(fig)
 
                 # Feature Importance Bar Chart
                 importances = pd.DataFrame({
-                    'feature': X.columns,
+                    'feature': X_test.columns,
                     'importance': model.feature_importances_
-                }).sort_values('importance', ascending=False).head(10)  # Limit to top 10 features
+                }).sort_values('importance', ascending=False).head(10)
 
                 st.markdown("**Feature Importance**")
                 st.markdown("This chart shows the relative importance of each feature in predicting anomalies for the selected period.")
