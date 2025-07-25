@@ -471,6 +471,14 @@ def show_rca_workbench():
 # This guarantees perfect alignment between the model, the SHAP values, and the feature data,
 # completely eliminating the possibility of a column mismatch error.
 # =====================================================================================
+# =====================================================================================
+# START: DEFINITIVE FIX FOR SHAP `AssertionError`
+#
+# This block replaces the entire "AI-Driven Importance" tab content in `show_rca_workbench`.
+# It resolves the error by training a temporary, local model on the filtered `rca_df`.
+# This guarantees perfect alignment between the model, the SHAP values, and the feature data,
+# completely eliminating the possibility of a column mismatch error.
+# =====================================================================================
     with tab4:
         st.subheader("AI-Driven Root Cause Identification (Feature Importance)")
         st.markdown("**Use Case:** Use a machine learning model to rank variables by their importance in predicting an anomaly within the selected time frame.")
@@ -539,6 +547,7 @@ def show_rca_workbench():
 # =====================================================================================
 # END: DEFINITIVE FIX
 # =====================================================================================
+
 
 # =================================================================================================
 # MODULE 4: CHANGE VALIDATION & CAPA
