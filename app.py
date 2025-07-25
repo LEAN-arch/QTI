@@ -3,7 +3,7 @@
 #
 # AUTHOR: Subject Matter Expert AI
 # DATE: 2024-07-24
-# VERSION: 2.5.0 (SME Definitive Fix & DOE/RSM Module)
+# VERSION: 2.6.0 (SME Definitive Fix: SHAP Replaced with Permutation Importance)
 #
 # DESCRIPTION:
 # This is the gold master, single-file Streamlit application for a Quality Technical
@@ -13,15 +13,14 @@
 # session state and advanced caching. All known bugs are resolved, and functionalities
 # have been substantially upgraded for precision and insight.
 #
-# SME NOTES (v2.5.0):
-# - CRITICAL FIX (SHAP/RCA): The persistent `AssertionError` in the RCA Workbench has been
-#   definitively resolved by decoupling the analysis from the global model. The "AI-Driven
-#   Importance" tab now trains a temporary, local model on-the-fly using only the user-
-#   filtered data. This guarantees perfect alignment and robust, error-free analysis.
-# - NEW MODULE (DOE/RSM): Added a high-complexity "DOE & Process Optimization" module. This
-#   simulates a Central Composite Design (CCD) and performs a full Response Surface
-#   Methodology (RSM) analysis, complete with advanced 3D surface plots, 2D contour plots,
-#   and interaction plots to provide engineers with proactive optimization tools.
+# SME NOTES (v2.6.0):
+# - CRITICAL FIX (AI-DRIVEN RCA): The persistent `AssertionError` from the SHAP library has
+#   been definitively resolved by replacing the entire SHAP analysis in the RCA Workbench.
+# - NEW METHOD: The "AI-Driven Importance" tab now uses Permutation Importance, a robust,
+#   model-agnostic technique from scikit-learn. This change completely eliminates the source
+#   of the previous errors while providing a powerful and intuitive alternative for feature
+#   importance analysis. The global prediction model in the "Predictive & Optimization" tab
+#   remains unchanged as it was stable.
 # =================================================================================================
 
 # --- 1. CORE & UTILITY IMPORTS ---
@@ -55,6 +54,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
+from sklearn.inspection import permutation_importance # NEW: For robust feature importance
 import scipy.stats as stats
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
@@ -73,14 +73,14 @@ from pptx.util import Inches, Pt
 
 # --- 6. APPLICATION CONFIGURATION ---
 st.set_page_config(
-    page_title="QTI Engineering Workbench v2.5",
+    page_title="QTI Engineering Workbench v2.6",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
         'Get Help': 'https://www.example.com/help',
         'Report a bug': "https://www.example.com/bug",
-        'About': "# QTI Engineering Workbench v2.5\nThis is an enterprise-grade application for Quality professionals."
+        'About': "# QTI Engineering Workbench v2.6\nThis is an enterprise-grade application for Quality professionals."
     }
 )
 # Suppress common warnings for a cleaner user experience
@@ -199,30 +199,21 @@ def generate_lod_data():
 @st.cache_data
 def generate_doe_data():
     """Generates data for a 2-factor Central Composite Design (CCD) experiment."""
-    # Define the factor levels
     factors = {'reagent_ph': [7.0, 7.4], 'pressure_psi': [48, 52]}
-    
-    # Create the CCD matrix in coded units (-1, 1)
     design = ccdesign(2, center=(3, 3), face='ccc')
     design_df = pd.DataFrame(design, columns=['reagent_ph_coded', 'pressure_psi_coded'])
 
-    # Convert coded units to real units
     ph_center, ph_range = np.mean(factors['reagent_ph']), (factors['reagent_ph'][1] - factors['reagent_ph'][0]) / 2
     psi_center, psi_range = np.mean(factors['pressure_psi']), (factors['pressure_psi'][1] - factors['pressure_psi'][0]) / 2
     
     design_df['reagent_ph'] = design_df['reagent_ph_coded'] * ph_range + ph_center
     design_df['pressure_psi'] = design_df['pressure_psi_coded'] * psi_range + psi_center
 
-    # Simulate the response based on a true underlying model with curvature and interaction
-    # True model: Yield = 85 - 20*(ph-7.25)^2 - 5*(psi-50.5)^2 - 5*(ph-7.25)*(psi-50.5) + noise
-    # This model has an optimum yield > 85 near pH=7.25 and psi=50.5
     ph_term = design_df['reagent_ph'] - 7.25
     psi_term = design_df['pressure_psi'] - 50.5
-    
     np.random.seed(101)
     noise = np.random.normal(0, 0.75, len(design_df))
     true_yield = 85 - 20 * (ph_term**2) - 5 * (psi_term**2) - 5 * ph_term * psi_term + noise
-    
     design_df['product_yield'] = true_yield.round(2)
     return design_df
 
@@ -243,13 +234,10 @@ def calculate_cpk(df_series, usl, lsl):
 def apply_nelson_rules(series, center_line, ucl, lcl):
     """Identifies points violating basic Nelson Rules (1, 2, 3)."""
     violations = pd.Series([False] * len(series), index=series.index)
-    # Rule 1: One point outside +/- 3 sigma
     violations = violations | (series > ucl) | (series < lcl)
-    # Rule 2: Nine points in a row on the same side of the centerline
     for i in range(8, len(series)):
         if all(series.iloc[i-8:i+1] > center_line) or all(series.iloc[i-8:i+1] < center_line):
             violations.iloc[i] = True
-    # Rule 3: Six points in a row, all increasing or all decreasing
     for i in range(5, len(series)):
         if all(np.diff(series.iloc[i-5:i+1]) > 0) or all(np.diff(series.iloc[i-5:i+1]) < 0):
             violations.iloc[i] = True
@@ -262,17 +250,13 @@ def plot_i_chart(df, param, title):
     if len(data) < 2 or len(mr) == 0:
         st.warning(f"Not enough data to generate I-Chart for {param}.")
         return None
-
     cl = data.mean()
     mr_cl = mr.mean()
     sigma = st.session_state.config.spc_settings.sigma_level
-    # d2 constant for n=2 is 1.128
     ucl = cl + sigma * (mr_cl / 1.128)
     lcl = cl - sigma * (mr_cl / 1.128)
-
     violations = apply_nelson_rules(data, cl, ucl, lcl)
     violation_points = df[violations]
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df['timestamp'], y=data, mode='lines+markers', name=param, marker_color='blue'))
     fig.add_trace(go.Scatter(x=violation_points['timestamp'], y=violation_points[param], mode='markers', name='Violation', marker=dict(color='red', size=10, symbol='x')))
@@ -281,7 +265,6 @@ def plot_i_chart(df, param, title):
     fig.add_hline(y=lcl, line_color='red', line_dash='dash', annotation_text=f"LCL ({sigma}σ)", annotation_position="top right")
     fig.update_layout(title_text=f'<b>{title} for {param}</b>', title_x=0.5, legend_orientation='h', legend_x=0, legend_y=1.1)
     st.plotly_chart(fig, use_container_width=True)
-
     if violations.any():
         st.warning(f"Detected {violations.sum()} out-of-control point(s). See chart for details.")
         with st.expander("Violation Details"):
@@ -290,10 +273,8 @@ def plot_i_chart(df, param, title):
         st.success("Process appears to be in statistical control based on the selected rules.")
     return fig
 
-# Initialize a dictionary in session_state to store analysis results for reporting
 if 'report_content' not in st.session_state:
     st.session_state.report_content = {}
-
 
 # =================================================================================================
 # MODULE 1: QTI COMMAND CENTER
@@ -302,7 +283,6 @@ def show_command_center():
     st.title("🔬 QTI Command Center")
     st.markdown("Welcome to the **QTI Command Center**. This dashboard provides a real-time, high-level overview of process health, active quality events, and key performance indicators (KPIs).")
     process_data, capa_data = st.session_state['process_data'], st.session_state['capa_data']
-
     st.subheader("Key Performance & Quality Indicators (KPIs)")
     kpi_cols = st.columns(5)
     active_inv = len(capa_data[~capa_data['status'].str.startswith('Closed')])
@@ -315,7 +295,6 @@ def show_command_center():
     config = st.session_state.config.spc_settings
     cpk_overall = calculate_cpk(process_data['pressure_psi'], config.usl, config.lsl)
     kpi_cols[4].metric("Overall Cpk (Pressure)", f"{cpk_overall:.2f}", help=f"Process Capability Index for pressure. Target > 1.33.")
-
     st.markdown("---")
     col1, col2 = st.columns((3, 2))
     with col1:
@@ -331,7 +310,6 @@ def show_command_center():
         st.markdown("Summary of ongoing corrective and preventive actions.")
         active_capas = capa_data[~capa_data['status'].str.startswith('Closed')].copy()
         st.dataframe(active_capas.style.apply(lambda s: ['background-color: #FFC7CE' if s['status'] == 'Overdue' else '' for v in s], axis=1), use_container_width=True, hide_index=True)
-
     st.subheader("Process Health Matrix")
     st.markdown("A heatmap showing the anomaly rate (%) for each key parameter on each production line. Darker red indicates a higher rate of anomalies.")
     params = ['reagent_ph', 'fill_volume_ml', 'pressure_psi']
@@ -357,25 +335,20 @@ def show_process_monitoring():
     st.title("📈 Process Monitoring & Statistical Process Control (SPC)")
     st.markdown("This module provides tools to monitor process stability and detect deviations from normal operation.")
     process_data = st.session_state['process_data']
-
     st.sidebar.header("Monitoring Filters")
     lines = ['All Lines'] + sorted(process_data['line_id'].unique())
     line_to_monitor = st.sidebar.selectbox("Select Process Line:", lines)
     monitor_df = process_data.copy() if line_to_monitor == 'All Lines' else process_data[process_data['line_id'] == line_to_monitor].copy()
     monitor_df = monitor_df.sort_values('timestamp').reset_index(drop=True)
-
     st.sidebar.subheader("SPC Settings")
     st.session_state.config.spc_settings.sigma_level = st.sidebar.slider(
         "Control Limit Sigma (σ)", 2.0, 4.0, st.session_state.config.spc_settings.sigma_level, 0.5,
         help="Sets the width of the control limits (e.g., 3σ is standard).")
-
     if len(monitor_df) < 10:
         st.warning("Insufficient data for the selected line. Please select a line with more data points.")
         return
-
     tab1, tab2, tab3, tab4 = st.tabs(["I-MR Chart", "EWMA Chart", "CUSUM Chart", "Multivariate (Hotelling's T²)"])
     param_options = ('reagent_ph', 'fill_volume_ml', 'pressure_psi')
-
     with tab1:
         st.subheader("Individuals Chart (I-Chart) with Nelson Rules")
         with st.expander("**Methodology & Interpretation**"):
@@ -387,7 +360,6 @@ def show_process_monitoring():
                 st.session_state.report_content['spc_imr'] = {
                     "title": f"I-Chart for {param_imr} on {line_to_monitor}", "figure": imr_fig,
                     "text": f"An I-Chart for '{param_imr}' was generated with {st.session_state.config.spc_settings.sigma_level}σ control limits."}
-
     with tab2:
         st.subheader("Exponentially Weighted Moving Average (EWMA) Chart")
         with st.expander("**Methodology & Interpretation**"):
@@ -403,7 +375,6 @@ def show_process_monitoring():
         fig.add_hline(y=cl, line_color='green', annotation_text="Center Line"); fig.add_hline(y=ucl, line_color='red', line_dash='dash', annotation_text="UCL"); fig.add_hline(y=lcl, line_color='red', line_dash='dash', annotation_text="LCL")
         fig.update_layout(title_text=f'<b>EWMA Chart for {param_ewma} (λ={lambda_val})</b>', title_x=0.5)
         st.plotly_chart(fig, use_container_width=True)
-
     with tab3:
         st.subheader("Cumulative Sum (CUSUM) Chart")
         with st.expander("**Methodology & Interpretation**"):
@@ -414,7 +385,6 @@ def show_process_monitoring():
         fig = px.line(x=monitor_df['timestamp'], y=cusum, title=f"<b>CUSUM Chart for {param_cusum}</b>", markers=False)
         fig.add_hline(y=0, line_color='green'); fig.update_layout(title_x=0.5, yaxis_title="Cumulative Sum of Deviations")
         st.plotly_chart(fig, use_container_width=True)
-
     with tab4:
         st.subheader("Multivariate Control Chart (Hotelling's T²)")
         with st.expander("**Methodology & Interpretation**"):
@@ -427,7 +397,6 @@ def show_process_monitoring():
         else:
             X = monitor_df[features]; X_scaled = StandardScaler().fit_transform(X)
             mean_vec = np.mean(X_scaled, axis=0)
-            # Use pseudo-inverse (pinv) for robustness against singular matrices
             inv_cov = np.linalg.pinv(np.cov(X_scaled, rowvar=False))
             t_sq = [ (row - mean_vec) @ inv_cov @ (row - mean_vec).T for row in X_scaled]
             p, n = len(features), len(X); alpha = 0.01
@@ -497,15 +466,21 @@ def show_rca_workbench():
         else: st.info("Please select at least two features for clustering.")
 
     with tab4:
-        st.subheader("AI-Driven Root Cause Identification (Feature Importance)")
-        st.markdown("**Use Case:** Use a machine learning model to rank variables by their importance in predicting an anomaly within the selected time frame.")
+        st.subheader("AI-Driven Importance (Permutation Method)")
+        st.markdown("This tab uses **Permutation Importance**, a robust technique to identify which features are most critical for predicting anomalies within the selected time frame.")
+        with st.expander("**Methodology & Interpretation**"):
+            st.markdown("""
+            - **What it is:** A technique to measure the importance of a feature by calculating the decrease in a model's score when that feature's values are randomly shuffled. A large drop in score indicates a highly important feature.
+            - **Why it's used:** It is highly reliable, model-agnostic (works with any model), and avoids the pitfalls of some other methods. It directly measures how much the model *relies* on a feature for its predictions.
+            - **How to interpret:** The bar chart shows the mean decrease in model performance (accuracy) caused by shuffling each feature. Longer bars indicate more important features. The error bars show the variability of the importance score over multiple shuffling rounds.
+            """)
         
         if rca_df['is_anomaly'].nunique() < 2 or rca_df['is_anomaly'].value_counts().min() < 5:
-            st.warning("Not enough anomaly data in the selected date range to build a reliable predictive model.")
+            st.warning("Not enough anomaly data in the selected date range to calculate feature importance.")
         else:
-            with st.spinner("Training local model and calculating SHAP values for the selected time range..."):
+            with st.spinner("Training local model and calculating Permutation Importance..."):
                 try:
-                    # --- Local Model Training on Filtered Data (Definitive Fix) ---
+                    # --- Local Model Training on Filtered Data ---
                     features = ['reagent_ph', 'fill_volume_ml', 'pressure_psi'] + [col for col in rca_cats if rca_df[col].nunique() > 1]
                     target = 'is_anomaly'
                     X = pd.get_dummies(rca_df[features], drop_first=True)
@@ -514,29 +489,34 @@ def show_rca_workbench():
                     model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
                     model.fit(X_train, y_train)
                     
-                    explainer = shap.TreeExplainer(model)
-                    shap_values = explainer.shap_values(X_test)
+                    # --- Calculate Permutation Importance ---
+                    result = permutation_importance(
+                        model, X_test, y_test, n_repeats=10, random_state=42, n_jobs=-1
+                    )
                     
-                    st.markdown("**SHAP Summary Plot**")
-                    st.markdown("This plot shows the impact of each feature on the model's prediction of an anomaly. Each dot is a single observation. Red means a high feature value, blue means low. A positive SHAP value pushes the prediction towards 'Anomaly'.")
-                    
-                    fig, ax = plt.subplots()
-                    shap.summary_plot(shap_values[1], X_test, show=False)
-                    st.pyplot(fig)
-                    plt.close(fig)
-                    
-                    importances = pd.DataFrame({'feature': X_train.columns, 'importance': model.feature_importances_}).sort_values('importance', ascending=False)
-                    
-                    st.markdown("**Local Feature Importance**")
-                    st.markdown("This chart shows the overall importance of each feature in the model for the selected time period.")
-                    fig_bar = px.bar(importances, x='importance', y='feature', orientation='h', title='Feature Importance for Anomaly Prediction')
-                    fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
+                    importances = pd.DataFrame({
+                        'feature': X_test.columns,
+                        'importance_mean': result.importances_mean,
+                        'importance_std': result.importances_std,
+                    }).sort_values('importance_mean', ascending=True)
+
+                    # --- Display Results ---
+                    st.markdown("**Permutation Importance for Anomaly Prediction**")
+                    fig_bar = px.bar(
+                        importances, 
+                        x='importance_mean', 
+                        y='feature', 
+                        error_x='importance_std',
+                        orientation='h', 
+                        title='Feature Importance (Mean Accuracy Decrease)'
+                    )
+                    fig_bar.update_layout(xaxis_title="Decrease in Model Accuracy", yaxis_title="Feature")
                     st.plotly_chart(fig_bar, use_container_width=True)
 
-                    st.session_state.report_content['rca_importance'] = {"title": "AI-Driven Feature Importance (RCA Period)", "figure": fig_bar,
-                        "text": "A Random Forest model was trained on data from the selected time period to predict anomalies. The chart shows the Gini importance of each feature for that specific period."}
+                    st.session_state.report_content['rca_importance'] = {"title": "Permutation Feature Importance (RCA Period)", "figure": fig_bar,
+                        "text": "A Random Forest model was trained on the selected time period. Feature importance was calculated by measuring the drop in model accuracy when a feature is shuffled. Longer bars indicate more critical features."}
                 except Exception as e:
-                    st.error(f"An error occurred during model training or SHAP analysis: {e}")
+                    st.error(f"An error occurred during importance calculation: {e}")
 
 
 # =================================================================================================
@@ -571,7 +551,7 @@ def show_change_validation():
         else: st.error("❌ **Conclusion:** Equivalence cannot be concluded.")
 
 # =================================================================================================
-# MODULE 5: DOE & PROCESS OPTIMIZATION (NEW)
+# MODULE 5: DOE & PROCESS OPTIMIZATION
 # =================================================================================================
 def show_doe_optimization():
     st.title("🧪 DOE & Process Optimization")
@@ -582,9 +562,7 @@ def show_doe_optimization():
     """)
 
     doe_data = generate_doe_data()
-
     tab1, tab2, tab3 = st.tabs(["1. Experimental Design", "2. RSM Analysis & Visualization", "3. Effects & Interaction Analysis"])
-
     with tab1:
         st.subheader("1. Central Composite Design (CCD)")
         st.markdown("""
@@ -596,117 +574,56 @@ def show_doe_optimization():
         Below is the simulated experimental plan and the resulting `product_yield` for each run.
         """)
         st.dataframe(doe_data, use_container_width=True, hide_index=True)
-
     with tab2:
         st.subheader("2. Response Surface Methodology (RSM) Analysis")
         st.markdown("RSM uses statistical models to analyze the data from the DOE. We fit a second-order polynomial model to the data to create a 'map' of the response. This map helps us visualize the process and find the optimal operating conditions.")
-
-        # Fit the full quadratic model using statsmodels
         model_formula = "product_yield ~ reagent_ph + pressure_psi + I(reagent_ph**2) + I(pressure_psi**2) + reagent_ph:pressure_psi"
         try:
             model = smf.ols(formula=model_formula, data=doe_data).fit()
-            
-            st.write("**Regression Model Summary**")
-            st.code(str(model.summary()))
+            st.write("**Regression Model Summary**"); st.code(str(model.summary()))
             with st.expander("How to Interpret the Model Summary"):
                 st.markdown("""
                 - **R-squared:** A high value (close to 1.0) indicates the model explains a large proportion of the variability in the response.
                 - **Coef:** The estimated coefficients for each term in the model.
                 - **P>|t| (p-value):** The statistical significance of each term. A low p-value (typically < 0.05) suggests the term has a significant effect on the response. Look for significant linear (`reagent_ph`, `pressure_psi`), quadratic (`I(...)**2`), and interaction (`...:...`) terms.
                 """)
-        except Exception as e:
-            st.error(f"Failed to fit RSM model: {e}")
-            return
-        
-        # Create a grid for plotting
+        except Exception as e: st.error(f"Failed to fit RSM model: {e}"); return
         ph_range = np.linspace(doe_data['reagent_ph'].min(), doe_data['reagent_ph'].max(), 30)
         psi_range = np.linspace(doe_data['pressure_psi'].min(), doe_data['pressure_psi'].max(), 30)
         grid_ph, grid_psi = np.meshgrid(ph_range, psi_range)
         grid_df = pd.DataFrame({'reagent_ph': grid_ph.flatten(), 'pressure_psi': grid_psi.flatten()})
-        
         grid_df['predicted_yield'] = model.predict(grid_df)
-        
         st.subheader("3D Response Surface Plot")
         st.markdown("This 3D plot visualizes the fitted response surface. The peak of the surface represents the combination of factors that is predicted to maximize the product yield. It provides a powerful and intuitive understanding of the process landscape.")
-        
-        fig_3d = go.Figure(data=[go.Surface(
-            z=grid_df['predicted_yield'].values.reshape(grid_ph.shape),
-            x=grid_ph,
-            y=grid_psi,
-            colorscale='Viridis',
-            colorbar=dict(title='Predicted Yield')
-        )])
-        fig_3d.add_trace(go.Scatter3d(
-            x=doe_data['reagent_ph'], y=doe_data['pressure_psi'], z=doe_data['product_yield'],
-            mode='markers', marker=dict(size=5, color='red', symbol='circle'), name='Experimental Runs'
-        ))
-        fig_3d.update_layout(
-            title='<b>3D Response Surface of Product Yield</b>',
-            scene=dict(xaxis_title='Reagent pH', yaxis_title='Pressure (psi)', zaxis_title='Product Yield'),
-            autosize=True, height=600
-        )
+        fig_3d = go.Figure(data=[go.Surface(z=grid_df['predicted_yield'].values.reshape(grid_ph.shape), x=grid_ph, y=grid_psi, colorscale='Viridis', colorbar=dict(title='Predicted Yield'))])
+        fig_3d.add_trace(go.Scatter3d(x=doe_data['reagent_ph'], y=doe_data['pressure_psi'], z=doe_data['product_yield'], mode='markers', marker=dict(size=5, color='red', symbol='circle'), name='Experimental Runs'))
+        fig_3d.update_layout(title='<b>3D Response Surface of Product Yield</b>', scene=dict(xaxis_title='Reagent pH', yaxis_title='Pressure (psi)', zaxis_title='Product Yield'), autosize=True, height=600)
         st.plotly_chart(fig_3d, use_container_width=True)
-
         st.subheader("2D Contour Plot")
         st.markdown("The contour plot is a top-down, 2D view of the response surface. Each line represents a constant product yield. The center of the concentric contours indicates the optimal region. This plot is excellent for determining specific factor settings for a target yield.")
-        
-        fig_contour = go.Figure(data=[go.Contour(
-            z=grid_df['predicted_yield'].values.reshape(grid_ph.shape),
-            x=ph_range,
-            y=psi_range,
-            colorscale='Viridis',
-            colorbar=dict(title='Predicted Yield'),
-            contours=dict(coloring='lines', showlabels=True)
-        )])
-        fig_contour.add_trace(go.Scatter(
-             x=doe_data['reagent_ph'], y=doe_data['pressure_psi'],
-             mode='markers', marker=dict(color='red', size=8), name='Experimental Runs'
-        ))
-        fig_contour.update_layout(
-            title='<b>Contour Plot of Product Yield</b>',
-            xaxis_title='Reagent pH', yaxis_title='Pressure (psi)',
-            autosize=True, height=500
-        )
+        fig_contour = go.Figure(data=[go.Contour(z=grid_df['predicted_yield'].values.reshape(grid_ph.shape), x=ph_range, y=psi_range, colorscale='Viridis', colorbar=dict(title='Predicted Yield'), contours=dict(coloring='lines', showlabels=True))])
+        fig_contour.add_trace(go.Scatter(x=doe_data['reagent_ph'], y=doe_data['pressure_psi'], mode='markers', marker=dict(color='red', size=8), name='Experimental Runs'))
+        fig_contour.update_layout(title='<b>Contour Plot of Product Yield</b>', xaxis_title='Reagent pH', yaxis_title='Pressure (psi)', autosize=True, height=500)
         st.plotly_chart(fig_contour, use_container_width=True)
-
     with tab3:
         st.subheader("3. Main Effects & Interaction Analysis")
         st.markdown("These plots help dissect the model results to understand the individual and combined effects of the factors.")
-
         st.subheader("Main Effects Plot")
         st.markdown("This plot shows the average change in response when a factor is moved from its low level to its high level. A steep slope indicates a strong main effect.")
-        
         main_effects_data = []
         for factor in ['reagent_ph', 'pressure_psi']:
-            low_level = doe_data[factor].min()
-            high_level = doe_data[factor].max()
-            mean_low = doe_data[doe_data[factor] == low_level]['product_yield'].mean()
-            mean_high = doe_data[doe_data[factor] == high_level]['product_yield'].mean()
-            main_effects_data.append({'Factor': factor, 'Level': 'Low', 'Mean Yield': mean_low, 'Setting': low_level})
-            main_effects_data.append({'Factor': factor, 'Level': 'High', 'Mean Yield': mean_high, 'Setting': high_level})
-        
+            low_level, high_level = doe_data[factor].min(), doe_data[factor].max()
+            mean_low, mean_high = doe_data[doe_data[factor] == low_level]['product_yield'].mean(), doe_data[doe_data[factor] == high_level]['product_yield'].mean()
+            main_effects_data.extend([{'Factor': factor, 'Level': 'Low', 'Mean Yield': mean_low, 'Setting': low_level}, {'Factor': factor, 'Level': 'High', 'Mean Yield': mean_high, 'Setting': high_level}])
         main_effects_df = pd.DataFrame(main_effects_data)
         fig_me = px.line(main_effects_df, x='Setting', y='Mean Yield', color='Factor', title='<b>Main Effects Plot</b>', markers=True)
         fig_me.update_layout(xaxis_title='Factor Setting', yaxis_title='Average Product Yield')
         st.plotly_chart(fig_me, use_container_width=True)
-
         st.subheader("Interaction Plot")
         st.markdown("This plot is crucial for identifying interactions. If the lines are **not parallel**, it signifies an interaction effect, meaning the effect of one factor on the yield depends on the level of the other factor. This is often a key discovery in a DOE.")
-
-        # Create data for interaction plot
-        interaction_df = doe_data[doe_data['reagent_ph_coded'].abs() == 1].copy() # Use only corner points
+        interaction_df = doe_data[doe_data['reagent_ph_coded'].abs() == 1].copy()
         interaction_df['reagent_ph_level'] = interaction_df['reagent_ph_coded'].map({-1: 'Low', 1: 'High'})
-        interaction_df['pressure_psi_level'] = interaction_df['pressure_psi_coded'].map({-1: 'Low', 1: 'High'})
-        
-        fig_int = px.line(
-            interaction_df, 
-            x='pressure_psi', 
-            y='product_yield', 
-            color='reagent_ph_level',
-            title='<b>Interaction between Reagent pH and Pressure</b>',
-            markers=True,
-            labels={'reagent_ph_level': 'Reagent pH Level'}
-        )
+        fig_int = px.line(interaction_df, x='pressure_psi', y='product_yield', color='reagent_ph_level', title='<b>Interaction between Reagent pH and Pressure</b>', markers=True, labels={'reagent_ph_level': 'Reagent pH Level'})
         fig_int.update_layout(xaxis_title='Pressure (psi)', yaxis_title='Average Product Yield')
         st.plotly_chart(fig_int, use_container_width=True)
 
@@ -733,7 +650,6 @@ def show_predictive_and_optimization():
     st.markdown("Leverage advanced analytics to forecast future process behavior, optimize settings, and get real-time, explainable predictions.")
     process_data = st.session_state['process_data']
     tab1, tab2, tab3 = st.tabs(["Time Series Forecasting", "Bayesian Optimization", "Real-Time Prediction (XAI)"])
-
     with tab1:
         st.subheader("Time Series Forecasting (SARIMA)"); st.markdown("**Use Case:** Forecast future process behavior based on historical trends and seasonality.")
         ts_data = process_data[['timestamp', 'pressure_psi']].set_index('timestamp').resample('D').mean().dropna()
@@ -745,7 +661,6 @@ def show_predictive_and_optimization():
                     forecast = model.get_forecast(steps=30); forecast_df = forecast.summary_frame()
                     fig = go.Figure(); fig.add_trace(go.Scatter(x=ts_data.index, y=ts_data['pressure_psi'], name='Historical Data')); fig.add_trace(go.Scatter(x=forecast_df.index, y=forecast_df['mean'], name='Forecast', line=dict(color='orange'))); fig.add_trace(go.Scatter(x=forecast_df.index, y=forecast_df['mean_ci_upper'], fill='tonexty', mode='lines', line_color='rgba(255,165,0,0.2)', name='95% CI')); fig.add_trace(go.Scatter(x=forecast_df.index, y=forecast_df['mean_ci_lower'], fill='tonexty', mode='lines', line_color='rgba(255,165,0,0.2)')); fig.update_layout(title_text="<b>Pressure Forecast (Next 30 Days)</b>", title_x=0.5, showlegend=False); st.plotly_chart(fig, use_container_width=True)
                 except Exception as e: st.error(f"Failed to build forecast model: {e}")
-
     with tab2:
         st.subheader("Process Optimization (Bayesian)"); st.markdown("**Use Case:** Intelligently search for optimal process settings to maximize a desired outcome.")
         with st.expander("**How it Works**"): st.markdown("Bayesian Optimization builds a probability model of the objective function and uses it to select the most promising parameters to evaluate next, avoiding a brute-force search.")
@@ -757,12 +672,10 @@ def show_predictive_and_optimization():
                 res = gp_minimize(black_box_function, dimensions=space, n_calls=15, random_state=0)
                 st.success(f"**Optimization Complete!**"); res_col1, res_col2 = st.columns(2); res_col1.metric("Optimal pH", f"{res.x[0]:.3f}"); res_col2.metric("Optimal Pressure (psi)", f"{res.x[1]:.2f}")
                 fig, ax = plt.subplots(figsize=(8, 4)); plot_convergence(res, ax=ax); ax.set_title("Convergence Plot"); st.pyplot(fig); plt.close(fig)
-
     with tab3:
         st.subheader("Real-Time Prediction with XAI (eXplainable AI)"); st.markdown("Input hypothetical parameters to get a real-time anomaly prediction and a breakdown of driving factors.")
         pipeline, explainer = get_model_and_explainer(process_data)
         if not pipeline: st.error("Model could not be trained. Please check dataset for anomalies."); return
-
         col1, col2 = st.columns([1, 2])
         with col1:
             st.write("**Input Parameters:**")
@@ -783,14 +696,10 @@ def show_predictive_and_optimization():
             st.write("**XAI Driver Analysis (SHAP Force Plot)**"); st.markdown("This plot shows forces pushing the prediction. <span style='color:red;'>Red bars</span> increase anomaly risk, <span style='color:blue;'>blue bars</span> decrease it.", unsafe_allow_html=True)
             scaled_input = pipeline.named_steps['scaler'].transform(input_df_processed)
             explanation = explainer(scaled_input)
-            
-            expected_value_class1 = explanation.base_values[0, 1]
-            shap_values_class1 = explanation.values[0, :, 1]
-            
+            expected_value_class1, shap_values_class1 = explanation.base_values[0, 1], explanation.values[0, :, 1]
             fig, ax = plt.subplots(figsize=(10, 2.5))
             shap.force_plot(expected_value_class1, shap_values_class1, input_df_processed.iloc[0], matplotlib=True, show=False, text_rotation=15)
             plt.tight_layout(); st.pyplot(fig, bbox_inches='tight'); plt.close(fig)
-
 
 # =================================================================================================
 # MODULE 7: ADVANCED DEMOS & VALIDATION
@@ -798,9 +707,7 @@ def show_predictive_and_optimization():
 def show_advanced_demos():
     st.title("⚙️ Advanced Demos & Validation")
     st.markdown("This module contains self-contained demonstrations of specialized validation tasks and advanced library integrations.")
-    
     tab1, tab2 = st.tabs(["Data Scalability (Dask)", "Assay Validation (LoD/LoQ)"])
-
     with tab1:
         st.subheader("Large-Scale Data Processing with Dask"); st.markdown("**Use Case:** Dask enables parallel computation on datasets larger than system memory by breaking them into chunks."); st.info("This demo compares Dask's performance against standard Pandas on a complex aggregation.")
         if st.button("Run Dask vs. Pandas Benchmark"):
@@ -813,7 +720,6 @@ def show_advanced_demos():
                 pandas_result = df.groupby('operator_id').agg({'pressure_psi': ['mean', 'std'], 'reagent_ph': 'mean'}); pandas_time = time.time() - start_time_pandas
             st.success(f"Pandas computation complete in **{pandas_time:.4f} seconds**.")
             st.markdown(f"**Result:** Dask took `{dask_time:.4f}s` vs. Pandas `{pandas_time:.4f}s`. Dask's overhead may make it slower on small data, but its architecture scales to terabyte-sized datasets where Pandas would fail."); st.dataframe(dask_result)
-
     with tab2:
         st.subheader("Assay Validation: Limit of Detection (LoD)"); st.markdown("**Use Case:** Determine the lowest concentration an assay can reliably detect.");
         with st.expander("**Methodology**"): st.markdown("- **Limit of Detection (LoD):** Calculated using Probit Regression (a GLM) to model the probability of detection vs. concentration. We find the concentration that gives a 95% detection rate.")
@@ -824,27 +730,20 @@ def show_advanced_demos():
         fig = go.Figure(); fig.add_trace(go.Scatter(x=df_lod['Concentration'], y=df_lod['Detected']/df_lod['Total'], mode='markers', name='Observed Hit Rate')); fig.add_trace(go.Scatter(x=10**x_range, y=y_pred, mode='lines', name='Probit Fit Curve')); fig.add_vline(x=lod, line_dash='dash', line_color='red', annotation_text=f"LoD = {lod:.3f}"); fig.add_hline(y=0.95, line_dash='dash', line_color='red'); fig.update_layout(title='<b>Probit Analysis for Limit of Detection (LoD)</b>', xaxis_title="Concentration", yaxis_title="Detection Probability", xaxis_type="log", title_x=0.5)
         st.metric("Calculated LoD (95% Probability)", f"{lod:.3f}"); st.plotly_chart(fig, use_container_width=True)
 
-
 # =================================================================================================
 # MODULE 8: REPORTING & EXPORT
 # =================================================================================================
 def add_slide_with_content(prs, title_text, content_text, figure=None):
-    # Use slide layout 1 ("Title and Content") to ensure placeholder availability.
     layout = prs.slide_layouts[1]
     slide = prs.slides.add_slide(layout)
     slide.shapes.title.text = title_text
-    
     content_box = slide.placeholders[1]
     tf = content_box.text_frame
     tf.text = content_text
     tf.paragraphs[0].font.size = Pt(14)
-
     if figure:
         try:
-            img_stream = io.BytesIO()
-            figure.write_image(img_stream, format='png', scale=2, width=800, height=450)
-            img_stream.seek(0)
-            # Position picture below text
+            img_stream = io.BytesIO(); figure.write_image(img_stream, format='png', scale=2, width=800, height=450); img_stream.seek(0)
             slide.shapes.add_picture(img_stream, Inches(1), Inches(2.5), width=Inches(8))
         except Exception as e:
             st.warning(f"Could not export figure '{title_text}' to PowerPoint. Error: {e}")
@@ -862,12 +761,10 @@ def show_reporting():
             slide = prs.slides.add_slide(prs.slide_layouts[0]); 
             slide.shapes.title.text = "QTI Investigation Summary Report"
             slide.placeholders[1].text = f"Author: {config.report_settings.author}\nCompany: {config.report_settings.company_name}\nDate: {datetime.now().strftime('%Y-%m-%d')}"
-            
             for key, selected in selections.items():
                 if selected:
                     content = st.session_state.report_content[key]
                     add_slide_with_content(prs, title_text=content['title'], content_text=content.get('text', 'No summary.'), figure=content.get('figure'))
-            
             ppt_stream = io.BytesIO(); prs.save(ppt_stream); ppt_stream.seek(0)
             st.download_button(label="📥 Download Report", data=ppt_stream, file_name=f"QTI_Report_{datetime.now().strftime('%Y%m%d')}.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
 
@@ -876,7 +773,7 @@ def show_reporting():
 # =================================================================================================
 def main():
     """Main function to run the Streamlit app."""
-    st.sidebar.title("QTI Workbench v2.5")
+    st.sidebar.title("QTI Workbench v2.6")
     st.sidebar.markdown("---")
     if 'data_loaded' not in st.session_state:
         st.session_state.config = load_config()
@@ -884,7 +781,6 @@ def main():
         st.session_state.capa_data = generate_capa_data()
         st.session_state.data_loaded = True
         st.session_state.report_content = {}
-
     page_functions = {
         "QTI Command Center": show_command_center,
         "Process Monitoring": show_process_monitoring,
@@ -896,7 +792,7 @@ def main():
         "Report Builder": show_reporting,
     }
     module = st.sidebar.radio("Select a Module:", tuple(page_functions.keys()))
-    st.sidebar.markdown("---"); st.sidebar.info("**QTI Engineering Workbench**\n\n© 2024 Innovate Bio-Diagnostics\n\n*Gold Master Edition v2.5*")
+    st.sidebar.markdown("---"); st.sidebar.info("**QTI Engineering Workbench**\n\n© 2024 Innovate Bio-Diagnostics\n\n*Gold Master Edition v2.6*")
     page_functions[module]()
 
 if __name__ == "__main__":
