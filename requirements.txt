@@ -1,35 +1,31 @@
 # ===================================================================
-# Requirements for QTI Engineering Workbench (Definitive Final Edition)
+# Requirements for QTI Engineering Workbench v2.1
 #
-# To install all dependencies from this file, run:
+# To install all dependencies, run:
 # pip install -r requirements.txt
 # ===================================================================
 
 # --- Core Application Framework ---
-streamlit==1.34.0
+streamlit~=1.35.0
 
-# --- Data Validation & Configuration ---
-pydantic==2.7.1
-pyyaml==6.0.1
+# --- Data Handling & Computation ---
+pandas~=2.2.0
+numpy~=1.26.0
+scipy~=1.13.0
+dask[complete]~=2024.5.0  # For parallel/large-scale data processing demos
 
-# --- Data Handling, Scalability & Database ---
-pandas==2.2.1
-numpy==1.26.4
-dask[complete]==2024.5.1
-sqlalchemy==2.0.30
+# --- Statistical & Machine Learning ---
+scikit-learn~=1.4.0
+statsmodels~=0.14.0
+shap~=0.45.0             # For eXplainable AI (XAI) feature importance
+scikit-optimize~=0.10.0  # For Bayesian optimization
 
-# --- Data Visualization & Explainability ---
-plotly==5.20.0
-matplotlib==3.8.4
-graphviz==0.20.3
-shap==0.45.0
-numba>=0.58.0
+# --- Visualization ---
+plotly~=5.20.0
+matplotlib~=3.8.0
+kaleido~=0.2.1           # Required by Plotly for exporting static images (e.g., to PowerPoint)
 
-# --- Statistics, ML, & Analytics ---
-scikit-learn==1.4.2
-scipy==1.13.0
-statsmodels==0.14.2
-scikit-optimize==0.9.0
-
-# --- Reporting ---
-python-pptx==0.6.23
+# --- Configuration & Reporting ---
+pydantic~=2.7.0          # For data validation in configuration models
+PyYAML~=6.0.1            # For parsing YAML configuration strings
+python-pptx~=0.6.23      # For generating PowerPoint reports
