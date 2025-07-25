@@ -462,38 +462,78 @@ def show_rca_workbench():
             profile['count'] = rca_df.groupby('cluster').size(); st.dataframe(profile)
         else: st.info("Please select at least two features for clustering.")
 
+# =====================================================================================
+# START: DEFINITIVE FIX FOR `AssertionError` in `shap.summary_plot`
+#
+# This block replaces the entire "AI-Driven Importance" tab content in `show_rca_workbench`.
+# It resolves the error by training a temporary, local model on the filtered `rca_df`.
+# This guarantees perfect alignment between the model, the SHAP values, and the feature data,
+# completely eliminating the possibility of a column mismatch error.
+# =====================================================================================
     with tab4:
-        st.subheader("AI-Driven Root Cause Identification (Feature Importance)"); st.markdown("**Use Case:** Use an ML model to rank variables by their importance in predicting an anomaly.")
+        st.subheader("AI-Driven Root Cause Identification (Feature Importance)")
+        st.markdown("**Use Case:** Use a machine learning model to rank variables by their importance in predicting an anomaly within the selected time frame.")
+        
         if rca_df['is_anomaly'].nunique() < 2 or rca_df['is_anomaly'].value_counts().min() < 5:
             st.warning("Not enough anomaly data in the selected date range to build a reliable predictive model.")
         else:
-            with st.spinner("Analyzing feature importance using the global model..."):
-                pipeline, explainer = get_model_and_explainer(st.session_state.process_data)
-                if not pipeline: st.error("Global model failed to train."); return
+            with st.spinner("Training local model and calculating SHAP values for the selected time range..."):
+                try:
+                    # --- Local Model Training ---
+                    # Define features based on the *filtered* rca_df to ensure relevance.
+                    features = ['reagent_ph', 'fill_volume_ml', 'pressure_psi'] + [col for col in rca_cats if rca_df[col].nunique() > 1]
+                    target = 'is_anomaly'
 
-                features_to_use = pipeline.feature_names_in_
-                X_rca = pd.get_dummies(rca_df).reindex(columns=features_to_use, fill_value=0)
-                X_rca_scaled = pipeline.named_steps['scaler'].transform(X_rca)
+                    X = pd.get_dummies(rca_df[features], drop_first=True)
+                    y = rca_df[target]
 
-                st.markdown("**SHAP Summary Plot**"); st.markdown("This plot shows the impact of each feature on predicting an anomaly. Red indicates a high feature value, blue means low. Positive SHAP values push the prediction towards 'Anomaly'.")
-                explanation = explainer(X_rca_scaled)
-                
-                # CRITICAL FIX v2.3: Use the most robust SHAP call to prevent AssertionErrors.
-                # We explicitly pass the SHAP values for class 1 (from the explanation object),
-                # the original feature values (X_rca) for correct color mapping, and the feature names.
-                # This prevents any possible column mismatch from data filtering.
-                fig, ax = plt.subplots()
-                shap.summary_plot(explanation.values[:,:,1], features=X_rca, feature_names=features_to_use, show=False)
-                st.pyplot(fig)
-                plt.close(fig)
+                    # Split the filtered data for training and explanation
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+                    
+                    # Create and train the local model
+                    model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+                    model.fit(X_train, y_train)
+                    
+                    # Create the explainer based on the locally trained model
+                    explainer = shap.TreeExplainer(model)
+                    shap_values = explainer.shap_values(X_test)
+                    
+                    # --- SHAP Summary Plot (Beeswarm) ---
+                    st.markdown("**SHAP Summary Plot**")
+                    st.markdown("This plot shows the impact of each feature on the model's prediction of an anomaly. Each dot is a single observation. Red means a high feature value, blue means low. A positive SHAP value pushes the prediction towards 'Anomaly'.")
+                    
+                    # This call is now guaranteed to be safe as the model, explainer,
+                    # shap_values, and X_test are all derived from the same filtered dataset.
+                    fig, ax = plt.subplots()
+                    shap.summary_plot(shap_values[1], X_test, show=False)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    # --- Feature Importance Bar Chart ---
+                    importances = pd.DataFrame({
+                        'feature': X_train.columns, 
+                        'importance': model.feature_importances_
+                    }).sort_values('importance', ascending=False)
+                    
+                    st.markdown("**Local Feature Importance**")
+                    st.markdown("This chart shows the overall importance of each feature in the model for the selected time period.")
+                    fig_bar = px.bar(importances, x='importance', y='feature', orientation='h', title='Feature Importance for Anomaly Prediction')
+                    fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_bar, use_container_width=True)
 
-                st.markdown("**Global Feature Importance**"); st.markdown("This chart shows the overall importance of each feature in the model.")
-                importances = pd.DataFrame({'feature': features_to_use, 'importance': pipeline.named_steps['classifier'].feature_importances_}).sort_values('importance', ascending=False)
-                fig_bar = px.bar(importances, x='importance', y='feature', orientation='h', title='Feature Importance for Anomaly Prediction'); fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig_bar, use_container_width=True)
-                st.session_state.report_content['rca_importance'] = {"title": "AI-Driven Feature Importance", "figure": fig_bar, "text": "A Random Forest model predicted anomalies. This chart shows each feature's Gini importance."}
+                    # Update report content if needed
+                    st.session_state.report_content['rca_importance'] = {
+                        "title": "AI-Driven Feature Importance (RCA Period)",
+                        "figure": fig_bar,
+                        "text": "A Random Forest model was trained on data from the selected time period to predict anomalies. The chart shows the Gini importance of each feature for that specific period."
+                    }
 
+                except Exception as e:
+                    st.error(f"An error occurred during model training or SHAP analysis: {e}")
 
+# =====================================================================================
+# END: DEFINITIVE FIX
+# =====================================================================================
 # =================================================================================================
 # MODULE 4: CHANGE VALIDATION & CAPA
 # =================================================================================================
