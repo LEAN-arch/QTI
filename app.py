@@ -492,32 +492,47 @@ with tab4:
                     st.error(f"Missing features in dataset: {missing_features}")
                     raise ValueError(f"Required features not found: {missing_features}")
 
+                # Handle missing values
+                if rca_df[features].isna().any().any():
+                    st.warning("Missing values detected. Imputing with median for numerical and mode for categorical features.")
+                    rca_df[numerical_features] = rca_df[numerical_features].fillna(rca_df[numerical_features].median())
+                    for col in categorical_features:
+                        rca_df[col] = rca_df[col].fillna(rca_df[col].mode()[0])
+
                 # Prepare data with consistent encoding
                 X = pd.get_dummies(rca_df[features], columns=categorical_features, drop_first=True)
                 y = rca_df[target].astype(int)
 
-                # Apply scaling to numerical features if needed
+                # Apply scaling to numerical features
                 from sklearn.preprocessing import StandardScaler
                 scaler = StandardScaler()
-                X[numerical_features] = scaler.fit_transform(X[numerical_features])
+                if numerical_features:
+                    X[numerical_features] = scaler.fit_transform(X[numerical_features])
 
-                # Split data
+                # Split data with checks for sufficient samples
+                from sklearn.model_selection import train_test_split
+                if len(X) < 10:  # Minimum samples for train-test split
+                    st.error("Too few samples for reliable model training. Need at least 10 samples.")
+                    raise ValueError("Insufficient samples for train-test split")
+
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y, test_size=0.3, random_state=42, stratify=y
                 )
 
                 # Train RandomForest model
+                from sklearn.ensemble import RandomForestClassifier
                 model = RandomForestClassifier(
                     n_estimators=100, random_state=42, class_weight='balanced', n_jobs=-1
                 )
                 model.fit(X_train, y_train)
 
                 # Calculate SHAP values using X_test
+                import shap
                 explainer = shap.TreeExplainer(model)
                 shap_values = explainer.shap_values(X_test)
 
                 # Verify shape compatibility for SHAP plot
-                if shap_values[1].shape[1] != X_test.shape[1]:
+                if len(shap_values) > 1 and shap_values[1].shape[1] != X_test.shape[1]:
                     st.error(
                         f"SHAP values shape {shap_values[1].shape} does not match "
                         f"data shape {X_test.shape}. Check preprocessing steps."
@@ -531,13 +546,14 @@ with tab4:
                     "Each dot represents an observation. Red indicates high feature values, "
                     "blue indicates low values. Positive SHAP values push predictions towards 'Anomaly'."
                 )
+                import matplotlib.pyplot as plt
                 fig, ax = plt.subplots(figsize=(10, 6))
-                # Use X_test to match shap_values
                 shap.summary_plot(shap_values[1], X_test, show=False, max_display=10)
                 st.pyplot(fig)
                 plt.close(fig)
 
                 # Feature Importance Bar Chart
+                import plotly.express as px
                 importances = pd.DataFrame({
                     'feature': X_test.columns,
                     'importance': model.feature_importances_
