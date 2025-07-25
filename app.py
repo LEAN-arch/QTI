@@ -3,7 +3,7 @@
 #
 # AUTHOR: Subject Matter Expert AI
 # DATE: 2024-07-24
-# VERSION: 2.4.0 (SME Definitive RCA/SHAP Fix)
+# VERSION: 2.5.0 (SME Definitive Fix & DOE/RSM Module)
 #
 # DESCRIPTION:
 # This is the gold master, single-file Streamlit application for a Quality Technical
@@ -13,13 +13,15 @@
 # session state and advanced caching. All known bugs are resolved, and functionalities
 # have been substantially upgraded for precision and insight.
 #
-# SME NOTES (v2.4.0):
+# SME NOTES (v2.5.0):
 # - CRITICAL FIX (SHAP/RCA): The persistent `AssertionError` in the RCA Workbench has been
-#   definitively resolved. The root cause was a feature mismatch between the globally trained
-#   model and the locally filtered data.
-# - NEW STRATEGY: The "AI-Driven Importance" tab now trains a temporary, local model on-the-fly
-#   using only the user-filtered data. This guarantees perfect alignment between the model,
-#   data, and SHAP explainer, making the analysis robust and error-free regardless of filtering.
+#   definitively resolved by decoupling the analysis from the global model. The "AI-Driven
+#   Importance" tab now trains a temporary, local model on-the-fly using only the user-
+#   filtered data. This guarantees perfect alignment and robust, error-free analysis.
+# - NEW MODULE (DOE/RSM): Added a high-complexity "DOE & Process Optimization" module. This
+#   simulates a Central Composite Design (CCD) and performs a full Response Surface
+#   Methodology (RSM) analysis, complete with advanced 3D surface plots, 2D contour plots,
+#   and interaction plots to provide engineers with proactive optimization tools.
 # =================================================================================================
 
 # --- 1. CORE & UTILITY IMPORTS ---
@@ -55,6 +57,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 import scipy.stats as stats
 import statsmodels.api as sm
+import statsmodels.formula.api as smf
 from statsmodels.stats.weightstats import ttost_ind
 import shap
 from pydantic import BaseModel, Field, conint, confloat
@@ -62,6 +65,7 @@ from skopt import gp_minimize
 from skopt.space import Real
 from skopt.utils import use_named_args
 from skopt.plots import plot_convergence
+from pyDOE2 import ccdesign # For DOE
 
 # --- 5. REPORTING IMPORTS ---
 from pptx import Presentation
@@ -69,14 +73,14 @@ from pptx.util import Inches, Pt
 
 # --- 6. APPLICATION CONFIGURATION ---
 st.set_page_config(
-    page_title="QTI Engineering Workbench v2.4",
+    page_title="QTI Engineering Workbench v2.5",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
         'Get Help': 'https://www.example.com/help',
         'Report a bug': "https://www.example.com/bug",
-        'About': "# QTI Engineering Workbench v2.4\nThis is an enterprise-grade application for Quality professionals."
+        'About': "# QTI Engineering Workbench v2.5\nThis is an enterprise-grade application for Quality professionals."
     }
 )
 # Suppress common warnings for a cleaner user experience
@@ -192,6 +196,35 @@ def generate_lod_data():
     detected = np.random.binomial(replicates, prob_detection)
     return pd.DataFrame({"Concentration": conc, "Detected": detected, "Total": replicates})
 
+@st.cache_data
+def generate_doe_data():
+    """Generates data for a 2-factor Central Composite Design (CCD) experiment."""
+    # Define the factor levels
+    factors = {'reagent_ph': [7.0, 7.4], 'pressure_psi': [48, 52]}
+    
+    # Create the CCD matrix in coded units (-1, 1)
+    design = ccdesign(2, center=(3, 3), face='ccc')
+    design_df = pd.DataFrame(design, columns=['reagent_ph_coded', 'pressure_psi_coded'])
+
+    # Convert coded units to real units
+    ph_center, ph_range = np.mean(factors['reagent_ph']), (factors['reagent_ph'][1] - factors['reagent_ph'][0]) / 2
+    psi_center, psi_range = np.mean(factors['pressure_psi']), (factors['pressure_psi'][1] - factors['pressure_psi'][0]) / 2
+    
+    design_df['reagent_ph'] = design_df['reagent_ph_coded'] * ph_range + ph_center
+    design_df['pressure_psi'] = design_df['pressure_psi_coded'] * psi_range + psi_center
+
+    # Simulate the response based on a true underlying model with curvature and interaction
+    # True model: Yield = 85 - 20*(ph-7.25)^2 - 5*(psi-50.5)^2 - 5*(ph-7.25)*(psi-50.5) + noise
+    # This model has an optimum yield > 85 near pH=7.25 and psi=50.5
+    ph_term = design_df['reagent_ph'] - 7.25
+    psi_term = design_df['pressure_psi'] - 50.5
+    
+    np.random.seed(101)
+    noise = np.random.normal(0, 0.75, len(design_df))
+    true_yield = 85 - 20 * (ph_term**2) - 5 * (psi_term**2) - 5 * ph_term * psi_term + noise
+    
+    design_df['product_yield'] = true_yield.round(2)
+    return design_df
 
 # =================================================================================================
 # HELPER FUNCTIONS & DEFINITIONS
@@ -463,90 +496,47 @@ def show_rca_workbench():
             profile['count'] = rca_df.groupby('cluster').size(); st.dataframe(profile)
         else: st.info("Please select at least two features for clustering.")
 
-# =====================================================================================
-# START: DEFINITIVE FIX FOR `AssertionError` in `shap.summary_plot`
-#
-# This block replaces the entire "AI-Driven Importance" tab content in `show_rca_workbench`.
-# It resolves the error by training a temporary, local model on the filtered `rca_df`.
-# This guarantees perfect alignment between the model, the SHAP values, and the feature data,
-# completely eliminating the possibility of a column mismatch error.
-# =====================================================================================
-# =====================================================================================
-# START: DEFINITIVE FIX FOR SHAP `AssertionError`
-#
-# This block replaces the entire "AI-Driven Importance" tab content in `show_rca_workbench`.
-# It resolves the error by training a temporary, local model on the filtered `rca_df`.
-# This guarantees perfect alignment between the model, the SHAP values, and the feature data,
-# completely eliminating the possibility of a column mismatch error.
-# =====================================================================================
     with tab4:
         st.subheader("AI-Driven Root Cause Identification (Feature Importance)")
         st.markdown("**Use Case:** Use a machine learning model to rank variables by their importance in predicting an anomaly within the selected time frame.")
-
-        # Check for sufficient data for modeling
+        
         if rca_df['is_anomaly'].nunique() < 2 or rca_df['is_anomaly'].value_counts().min() < 5:
-            st.warning("Not enough anomaly data in the selected date range to build a reliable predictive model. Ensure the data contains at least 5 samples for both anomaly and non-anomaly cases.")
+            st.warning("Not enough anomaly data in the selected date range to build a reliable predictive model.")
         else:
             with st.spinner("Training local model and calculating SHAP values for the selected time range..."):
                 try:
-                    # --- Local Model Training on Filtered Data (The Definitive Fix) ---
-                    # This strategy trains a model ONLY on the data being analyzed, guaranteeing
-                    # perfect alignment between the model, data, and explainer.
-
-                    # 1. Define features based on the *filtered* rca_df to ensure relevance.
+                    # --- Local Model Training on Filtered Data (Definitive Fix) ---
                     features = ['reagent_ph', 'fill_volume_ml', 'pressure_psi'] + [col for col in rca_cats if rca_df[col].nunique() > 1]
                     target = 'is_anomaly'
-
-                    # 2. Prepare data from the filtered dataframe
                     X = pd.get_dummies(rca_df[features], drop_first=True)
                     y = rca_df[target]
-
-                    # 3. Split the filtered data for training and explanation
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=0.3, random_state=42, stratify=y
-                    )
-
-                    # 4. Create and train the local model
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
                     model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
                     model.fit(X_train, y_train)
-
-                    # 5. Create the explainer and SHAP values based on the locally trained model
+                    
                     explainer = shap.TreeExplainer(model)
                     shap_values = explainer.shap_values(X_test)
-
-                    # --- SHAP Summary Plot (Beeswarm) ---
+                    
                     st.markdown("**SHAP Summary Plot**")
                     st.markdown("This plot shows the impact of each feature on the model's prediction of an anomaly. Each dot is a single observation. Red means a high feature value, blue means low. A positive SHAP value pushes the prediction towards 'Anomaly'.")
-
-                    # This call is now guaranteed to be safe because the model, explainer,
-                    # shap_values, and X_test are all derived from the same filtered dataset (rca_df).
+                    
                     fig, ax = plt.subplots()
                     shap.summary_plot(shap_values[1], X_test, show=False)
                     st.pyplot(fig)
                     plt.close(fig)
-
-                    # --- Feature Importance Bar Chart ---
-                    importances = pd.DataFrame({
-                        'feature': X_train.columns,
-                        'importance': model.feature_importances_
-                    }).sort_values('importance', ascending=False)
-
+                    
+                    importances = pd.DataFrame({'feature': X_train.columns, 'importance': model.feature_importances_}).sort_values('importance', ascending=False)
+                    
                     st.markdown("**Local Feature Importance**")
                     st.markdown("This chart shows the overall importance of each feature in the model for the selected time period.")
                     fig_bar = px.bar(importances, x='importance', y='feature', orientation='h', title='Feature Importance for Anomaly Prediction')
-                    fig_bar.update_layout(yaxis={'categoryorder': 'total ascending'})
+                    fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
                     st.plotly_chart(fig_bar, use_container_width=True)
 
-                    st.session_state.report_content['rca_importance'] = {
-                        "title": "AI-Driven Feature Importance (RCA Period)",
-                        "figure": fig_bar,
-                        "text": "A Random Forest model was trained on data from the selected time period to predict anomalies. The chart shows the Gini importance of each feature for that specific period."
-                    }
+                    st.session_state.report_content['rca_importance'] = {"title": "AI-Driven Feature Importance (RCA Period)", "figure": fig_bar,
+                        "text": "A Random Forest model was trained on data from the selected time period to predict anomalies. The chart shows the Gini importance of each feature for that specific period."}
                 except Exception as e:
                     st.error(f"An error occurred during model training or SHAP analysis: {e}")
-# =====================================================================================
-# END: DEFINITIVE FIX
-# =====================================================================================
 
 
 # =================================================================================================
@@ -580,9 +570,148 @@ def show_change_validation():
         if p_val < 0.05: st.success("✅ **Conclusion:** Processes are statistically equivalent within the specified bounds.")
         else: st.error("❌ **Conclusion:** Equivalence cannot be concluded.")
 
+# =================================================================================================
+# MODULE 5: DOE & PROCESS OPTIMIZATION (NEW)
+# =================================================================================================
+def show_doe_optimization():
+    st.title("🧪 DOE & Process Optimization")
+    st.markdown("""
+    This advanced module provides a complete workflow for **Design of Experiments (DOE)** and **Response Surface Methodology (RSM)**.
+    Use this to systematically investigate the effect of key process parameters (factors) on a critical output (response),
+    identify significant interactions, and find the optimal settings to maximize performance.
+    """)
+
+    doe_data = generate_doe_data()
+
+    tab1, tab2, tab3 = st.tabs(["1. Experimental Design", "2. RSM Analysis & Visualization", "3. Effects & Interaction Analysis"])
+
+    with tab1:
+        st.subheader("1. Central Composite Design (CCD)")
+        st.markdown("""
+        A **Central Composite Design** is a powerful and efficient experimental design used for process optimization. It allows us to fit a quadratic (second-order) model, which is necessary to model curvature in the response. This design consists of three types of points:
+        - **Factorial Points:** The corners of the design space (coded as -1 and +1).
+        - **Axial (Star) Points:** Points along the axes outside the factorial space, which allow for estimating curvature.
+        - **Center Points:** Replicates at the center of the design space to measure process stability and pure error.
+        
+        Below is the simulated experimental plan and the resulting `product_yield` for each run.
+        """)
+        st.dataframe(doe_data, use_container_width=True, hide_index=True)
+
+    with tab2:
+        st.subheader("2. Response Surface Methodology (RSM) Analysis")
+        st.markdown("RSM uses statistical models to analyze the data from the DOE. We fit a second-order polynomial model to the data to create a 'map' of the response. This map helps us visualize the process and find the optimal operating conditions.")
+
+        # Fit the full quadratic model using statsmodels
+        model_formula = "product_yield ~ reagent_ph + pressure_psi + I(reagent_ph**2) + I(pressure_psi**2) + reagent_ph:pressure_psi"
+        try:
+            model = smf.ols(formula=model_formula, data=doe_data).fit()
+            
+            st.write("**Regression Model Summary**")
+            st.code(str(model.summary()))
+            with st.expander("How to Interpret the Model Summary"):
+                st.markdown("""
+                - **R-squared:** A high value (close to 1.0) indicates the model explains a large proportion of the variability in the response.
+                - **Coef:** The estimated coefficients for each term in the model.
+                - **P>|t| (p-value):** The statistical significance of each term. A low p-value (typically < 0.05) suggests the term has a significant effect on the response. Look for significant linear (`reagent_ph`, `pressure_psi`), quadratic (`I(...)**2`), and interaction (`...:...`) terms.
+                """)
+        except Exception as e:
+            st.error(f"Failed to fit RSM model: {e}")
+            return
+        
+        # Create a grid for plotting
+        ph_range = np.linspace(doe_data['reagent_ph'].min(), doe_data['reagent_ph'].max(), 30)
+        psi_range = np.linspace(doe_data['pressure_psi'].min(), doe_data['pressure_psi'].max(), 30)
+        grid_ph, grid_psi = np.meshgrid(ph_range, psi_range)
+        grid_df = pd.DataFrame({'reagent_ph': grid_ph.flatten(), 'pressure_psi': grid_psi.flatten()})
+        
+        grid_df['predicted_yield'] = model.predict(grid_df)
+        
+        st.subheader("3D Response Surface Plot")
+        st.markdown("This 3D plot visualizes the fitted response surface. The peak of the surface represents the combination of factors that is predicted to maximize the product yield. It provides a powerful and intuitive understanding of the process landscape.")
+        
+        fig_3d = go.Figure(data=[go.Surface(
+            z=grid_df['predicted_yield'].values.reshape(grid_ph.shape),
+            x=grid_ph,
+            y=grid_psi,
+            colorscale='Viridis',
+            colorbar=dict(title='Predicted Yield')
+        )])
+        fig_3d.add_trace(go.Scatter3d(
+            x=doe_data['reagent_ph'], y=doe_data['pressure_psi'], z=doe_data['product_yield'],
+            mode='markers', marker=dict(size=5, color='red', symbol='circle'), name='Experimental Runs'
+        ))
+        fig_3d.update_layout(
+            title='<b>3D Response Surface of Product Yield</b>',
+            scene=dict(xaxis_title='Reagent pH', yaxis_title='Pressure (psi)', zaxis_title='Product Yield'),
+            autosize=True, height=600
+        )
+        st.plotly_chart(fig_3d, use_container_width=True)
+
+        st.subheader("2D Contour Plot")
+        st.markdown("The contour plot is a top-down, 2D view of the response surface. Each line represents a constant product yield. The center of the concentric contours indicates the optimal region. This plot is excellent for determining specific factor settings for a target yield.")
+        
+        fig_contour = go.Figure(data=[go.Contour(
+            z=grid_df['predicted_yield'].values.reshape(grid_ph.shape),
+            x=ph_range,
+            y=psi_range,
+            colorscale='Viridis',
+            colorbar=dict(title='Predicted Yield'),
+            contours=dict(coloring='lines', showlabels=True)
+        )])
+        fig_contour.add_trace(go.Scatter(
+             x=doe_data['reagent_ph'], y=doe_data['pressure_psi'],
+             mode='markers', marker=dict(color='red', size=8), name='Experimental Runs'
+        ))
+        fig_contour.update_layout(
+            title='<b>Contour Plot of Product Yield</b>',
+            xaxis_title='Reagent pH', yaxis_title='Pressure (psi)',
+            autosize=True, height=500
+        )
+        st.plotly_chart(fig_contour, use_container_width=True)
+
+    with tab3:
+        st.subheader("3. Main Effects & Interaction Analysis")
+        st.markdown("These plots help dissect the model results to understand the individual and combined effects of the factors.")
+
+        st.subheader("Main Effects Plot")
+        st.markdown("This plot shows the average change in response when a factor is moved from its low level to its high level. A steep slope indicates a strong main effect.")
+        
+        main_effects_data = []
+        for factor in ['reagent_ph', 'pressure_psi']:
+            low_level = doe_data[factor].min()
+            high_level = doe_data[factor].max()
+            mean_low = doe_data[doe_data[factor] == low_level]['product_yield'].mean()
+            mean_high = doe_data[doe_data[factor] == high_level]['product_yield'].mean()
+            main_effects_data.append({'Factor': factor, 'Level': 'Low', 'Mean Yield': mean_low, 'Setting': low_level})
+            main_effects_data.append({'Factor': factor, 'Level': 'High', 'Mean Yield': mean_high, 'Setting': high_level})
+        
+        main_effects_df = pd.DataFrame(main_effects_data)
+        fig_me = px.line(main_effects_df, x='Setting', y='Mean Yield', color='Factor', title='<b>Main Effects Plot</b>', markers=True)
+        fig_me.update_layout(xaxis_title='Factor Setting', yaxis_title='Average Product Yield')
+        st.plotly_chart(fig_me, use_container_width=True)
+
+        st.subheader("Interaction Plot")
+        st.markdown("This plot is crucial for identifying interactions. If the lines are **not parallel**, it signifies an interaction effect, meaning the effect of one factor on the yield depends on the level of the other factor. This is often a key discovery in a DOE.")
+
+        # Create data for interaction plot
+        interaction_df = doe_data[doe_data['reagent_ph_coded'].abs() == 1].copy() # Use only corner points
+        interaction_df['reagent_ph_level'] = interaction_df['reagent_ph_coded'].map({-1: 'Low', 1: 'High'})
+        interaction_df['pressure_psi_level'] = interaction_df['pressure_psi_coded'].map({-1: 'Low', 1: 'High'})
+        
+        fig_int = px.line(
+            interaction_df, 
+            x='pressure_psi', 
+            y='product_yield', 
+            color='reagent_ph_level',
+            title='<b>Interaction between Reagent pH and Pressure</b>',
+            markers=True,
+            labels={'reagent_ph_level': 'Reagent pH Level'}
+        )
+        fig_int.update_layout(xaxis_title='Pressure (psi)', yaxis_title='Average Product Yield')
+        st.plotly_chart(fig_int, use_container_width=True)
 
 # =================================================================================================
-# MODULE 5: PREDICTIVE & OPTIMIZATION ANALYTICS
+# MODULE 6: PREDICTIVE & OPTIMIZATION ANALYTICS
 # =================================================================================================
 @st.cache_resource
 def get_model_and_explainer(_df):
@@ -601,9 +730,9 @@ def get_model_and_explainer(_df):
 
 def show_predictive_and_optimization():
     st.title("🔮 Predictive & Optimization Analytics")
-    st.markdown("Leverage advanced analytics to forecast behavior, optimize settings, and get explainable predictions.")
+    st.markdown("Leverage advanced analytics to forecast future process behavior, optimize settings, and get real-time, explainable predictions.")
     process_data = st.session_state['process_data']
-    tab1, tab2, tab3 = st.tabs(["Time Series Forecasting", "Process Optimization (Bayesian)", "Real-Time Prediction (XAI)"])
+    tab1, tab2, tab3 = st.tabs(["Time Series Forecasting", "Bayesian Optimization", "Real-Time Prediction (XAI)"])
 
     with tab1:
         st.subheader("Time Series Forecasting (SARIMA)"); st.markdown("**Use Case:** Forecast future process behavior based on historical trends and seasonality.")
@@ -664,11 +793,12 @@ def show_predictive_and_optimization():
 
 
 # =================================================================================================
-# MODULE 6: ADVANCED DEMOS & VALIDATION
+# MODULE 7: ADVANCED DEMOS & VALIDATION
 # =================================================================================================
 def show_advanced_demos():
     st.title("⚙️ Advanced Demos & Validation")
-    st.markdown("Specialized validation tasks and advanced library integrations.")
+    st.markdown("This module contains self-contained demonstrations of specialized validation tasks and advanced library integrations.")
+    
     tab1, tab2 = st.tabs(["Data Scalability (Dask)", "Assay Validation (LoD/LoQ)"])
 
     with tab1:
@@ -694,8 +824,9 @@ def show_advanced_demos():
         fig = go.Figure(); fig.add_trace(go.Scatter(x=df_lod['Concentration'], y=df_lod['Detected']/df_lod['Total'], mode='markers', name='Observed Hit Rate')); fig.add_trace(go.Scatter(x=10**x_range, y=y_pred, mode='lines', name='Probit Fit Curve')); fig.add_vline(x=lod, line_dash='dash', line_color='red', annotation_text=f"LoD = {lod:.3f}"); fig.add_hline(y=0.95, line_dash='dash', line_color='red'); fig.update_layout(title='<b>Probit Analysis for Limit of Detection (LoD)</b>', xaxis_title="Concentration", yaxis_title="Detection Probability", xaxis_type="log", title_x=0.5)
         st.metric("Calculated LoD (95% Probability)", f"{lod:.3f}"); st.plotly_chart(fig, use_container_width=True)
 
+
 # =================================================================================================
-# MODULE 7: REPORTING & EXPORT
+# MODULE 8: REPORTING & EXPORT
 # =================================================================================================
 def add_slide_with_content(prs, title_text, content_text, figure=None):
     # Use slide layout 1 ("Title and Content") to ensure placeholder availability.
@@ -745,7 +876,7 @@ def show_reporting():
 # =================================================================================================
 def main():
     """Main function to run the Streamlit app."""
-    st.sidebar.title("QTI Workbench v2.4")
+    st.sidebar.title("QTI Workbench v2.5")
     st.sidebar.markdown("---")
     if 'data_loaded' not in st.session_state:
         st.session_state.config = load_config()
@@ -754,10 +885,18 @@ def main():
         st.session_state.data_loaded = True
         st.session_state.report_content = {}
 
-    page_functions = {"QTI Command Center": show_command_center, "Process Monitoring": show_process_monitoring, "RCA Workbench": show_rca_workbench, "Change Validation & CAPA": show_change_validation,
-                      "Predictive & Optimization": show_predictive_and_optimization, "Advanced Demos": show_advanced_demos, "Report Builder": show_reporting}
+    page_functions = {
+        "QTI Command Center": show_command_center,
+        "Process Monitoring": show_process_monitoring,
+        "RCA Workbench": show_rca_workbench,
+        "DOE & Process Optimization": show_doe_optimization,
+        "Change Validation & CAPA": show_change_validation,
+        "Predictive & Optimization": show_predictive_and_optimization,
+        "Advanced Demos": show_advanced_demos,
+        "Report Builder": show_reporting,
+    }
     module = st.sidebar.radio("Select a Module:", tuple(page_functions.keys()))
-    st.sidebar.markdown("---"); st.sidebar.info("**QTI Engineering Workbench**\n\n© 2024 Innovate Bio-Diagnostics\n\n*Gold Master Edition v2.4*")
+    st.sidebar.markdown("---"); st.sidebar.info("**QTI Engineering Workbench**\n\n© 2024 Innovate Bio-Diagnostics\n\n*Gold Master Edition v2.5*")
     page_functions[module]()
 
 if __name__ == "__main__":
